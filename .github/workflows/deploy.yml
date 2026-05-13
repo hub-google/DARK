@@ -1,0 +1,23 @@
+name: Deploy to GitHub Pages
+
+on:
+  push:
+    branches: [ main ]
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v3
+
+      - name: Inject Secrets
+        run: |
+          # 將 game.js 中的預留位置替換為 GitHub Secrets 裡的真實網址
+          sed -i "s|__GOOGLE_SCRIPT_URL__|${{ secrets.GOOGLE_SHEET_URL }}|g" game.js
+
+      - name: Deploy
+        uses: JamesIves/github-pages-deploy-action@v4
+        with:
+          folder: . # 部署目前資料夾下的所有內容
+          branch: gh-pages # 部署到 gh-pages 分支
