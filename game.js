@@ -1,21 +1,18 @@
 /**
  * DARK - AlphaZero Chinese Dark Chess Web Engine
+ * Logic synchronized with train_ai.py
  */
-
-const PIECE_DATA = {
-    'red': [['帥', 7], ['仕', 6], ['相', 5], ['俥', 4], ['傌', 3], ['炮', 2], ['兵', 1]],
-    'black': [['將', 7], ['士', 6], ['象', 5], ['車', 4], ['馬', 3], ['包', 2], ['卒', 1]]
-};
 
 class Game {
     constructor() {
         this.board = Array(4).fill(null).map(() => Array(8).fill(null));
-        this.turn = 'red';
+        this.turn = 'first'; // First move/flip decides color
+        this.playerColor = null;
+        this.aiColor = null;
         this.selected = null;
         this.history = [];
         this.isGameOver = false;
-        this.aiLevel = 400; // MCTS Simulations
-        this.session = null; // ONNX Session
+        this.session = null;
         
         this.initBoard();
         this.render();
@@ -26,33 +23,33 @@ class Game {
     async initAI() {
         this.updateStatus("正在加載 AI 大腦...");
         try {
-            // 注意：這裡假設 model.onnx 位於網頁根目錄
             this.session = await ort.InferenceSession.create('./model.onnx');
-            this.updateStatus("AI 就緒，請開始你的表演");
+            this.updateStatus("AI 就緒，由你先手翻牌");
         } catch (e) {
-            this.updateStatus("AI 加載失敗 (請確保 model.onnx 已導出並上傳)");
+            this.updateStatus("AI 加載失敗 (請確保已導出 model.onnx)");
             console.error(e);
         }
     }
 
     initBoard() {
         let pool = [];
-        for (const [color, pieces] of Object.entries(PIECE_DATA)) {
-            for (const [name, level] of pieces) {
-                let count = (level === 7) ? 1 : (level === 1 ? 5 : 2);
-                for (let i = 0; i < count; i++) {
-                    pool.push({ name, level, color, revealed: false });
-                }
-            }
+        const piecesInfo = [
+            {name: '帥', level: 7, color: 'red', count: 1}, {name: '仕', level: 6, color: 'red', count: 2},
+            {name: '相', level: 5, color: 'red', count: 2}, {name: '俥', level: 4, color: 'red', count: 2},
+            {name: '傌', level: 3, color: 'red', count: 2}, {name: '炮', level: 2, color: 'red', count: 2},
+            {name: '兵', level: 1, color: 'red', count: 5},
+            {name: '將', level: 7, color: 'black', count: 1}, {name: '士', level: 6, color: 'black', count: 2},
+            {name: '象', level: 5, color: 'black', count: 2}, {name: '車', level: 4, color: 'black', count: 2},
+            {name: '馬', level: 3, color: 'black', count: 2}, {name: '包', level: 2, color: 'black', count: 2},
+            {name: '卒', level: 1, color: 'black', count: 5}
+        ];
+        for (let p of piecesInfo) {
+            for (let i = 0; i < p.count; i++) pool.push({...p, revealed: false});
         }
-        // Shuffle
         pool.sort(() => Math.random() - 0.5);
-        
         let idx = 0;
         for (let r = 0; r < 4; r++) {
-            for (let c = 0; c < 8; c++) {
-                this.board[r][c] = pool[idx++];
-            }
+            for (let c = 0; c < 8; c++) this.board[r][c] = pool[idx++];
         }
     }
 
@@ -62,7 +59,10 @@ class Game {
     }
 
     handleBoardClick(e) {
-        if (this.isGameOver || this.turn === 'black') return;
+        if (this.isGameOver) return;
+        
+        // Only allow clicking if it's player's turn or first move
+        if (this.turn !== 'first' && this.turn !== this.playerColor) return;
 
         const cell = e.target.closest('.cell');
         if (!cell) return;
@@ -71,58 +71,68 @@ class Game {
         const c = parseInt(cell.dataset.c);
         const piece = this.board[r][c];
 
-        if (!piece) {
-            // Clicked empty cell
-            if (this.selected) this.tryMove(this.selected, [r, c]);
+        // 1. Flip Logic
+        if (piece && !piece.revealed) {
+            this.flipPiece(r, c);
             return;
         }
 
-        if (!piece.revealed) {
-            // Flip piece
-            this.flipPiece(r, c);
-            this.nextTurn();
-        } else if (piece.color === this.turn) {
-            // Select piece
+        // 2. Select/Move Logic
+        if (this.turn === 'first') return; 
+
+        if (piece && piece.revealed && piece.color === this.playerColor) {
             this.selected = [r, c];
             this.render();
         } else if (this.selected) {
-            // Try capture
             this.tryMove(this.selected, [r, c]);
         }
     }
 
     flipPiece(r, c) {
-        this.board[r][c].revealed = true;
-        this.history.push({ type: 'flip', pos: [r, c], player: this.turn });
+        const piece = this.board[r][c];
+        piece.revealed = true;
+        
+        // Handle first flip
+        if (this.turn === 'first') {
+            this.playerColor = piece.color;
+            this.aiColor = (piece.color === 'red') ? 'black' : 'red';
+            this.updateStatus(`你翻到了 ${piece.name}，你是 ${piece.color === 'red' ? '紅方' : '黑方'}`);
+            // In standard rules, flipping ends the turn
+        }
+
+        this.history.push({ type: 'flip', pos: [r, c], player: this.turn, name: piece.name });
         this.render();
+        this.nextTurn();
     }
 
     tryMove(from, to) {
         const [sr, sc] = from;
         const [tr, tc] = to;
-        if (this.canMove(sr, sc, tr, tc)) {
+        if (this.canMove(this.board, sr, sc, tr, tc)) {
+            const piece = this.board[sr][sc];
             const captured = this.board[tr][tc];
-            this.board[tr][tc] = this.board[sr][sc];
+            this.board[tr][tc] = piece;
             this.board[sr][sc] = null;
-            this.history.push({ type: 'move', from, to, player: this.turn, captured: captured ? captured.name : null });
+            this.history.push({ type: 'move', from, to, player: this.turn, piece: piece.name, captured: captured ? captured.name : null });
             this.selected = null;
             this.render();
             this.nextTurn();
         }
     }
 
-    canMove(sr, sc, tr, tc) {
-        const a = this.board[sr][sc];
-        const t = this.board[tr][tc];
+    canMove(b, sr, sc, tr, tc) {
+        const a = b[sr][sc];
+        const t = b[tr][tc];
+        if (!a || !a.revealed) return false;
         const dist = Math.abs(sr - tr) + Math.abs(sc - tc);
 
-        if (a.level === 2) { // 炮
+        if (a.level === 2) { // Cannon
             if (t && t.revealed && t.color !== a.color) {
                 let cnt = 0;
                 if (sr === tr) {
-                    for (let i = Math.min(sc, tc) + 1; i < Math.max(sc, tc); i++) if (this.board[sr][i]) cnt++;
+                    for (let i = Math.min(sc, tc) + 1; i < Math.max(sc, tc); i++) if (b[sr][i]) cnt++;
                 } else if (sc === tc) {
-                    for (let i = Math.min(sr, tr) + 1; i < Math.max(sr, tr); i++) if (this.board[i][sc]) cnt++;
+                    for (let i = Math.min(sr, tr) + 1; i < Math.max(sr, tr); i++) if (b[i][sc]) cnt++;
                 } else return false;
                 return cnt === 1;
             }
@@ -132,8 +142,8 @@ class Game {
         if (dist !== 1) return false;
         if (!t) return true;
         if (t.revealed && t.color !== a.color) {
-            if (a.level === 7 && t.level === 1) return false;
-            if (a.level === 1 && t.level === 7) return true;
+            if (a.level === 7 && t.level === 1) return false; 
+            if (a.level === 1 && t.level === 7) return true; 
             return a.level >= t.level;
         }
         return false;
@@ -146,36 +156,46 @@ class Game {
             return;
         }
 
-        this.turn = (this.turn === 'red') ? 'black' : 'red';
+        // Cycle turn: first -> colorA -> colorB -> ...
+        if (this.turn === 'first') {
+            // After first flip, turn goes to the OTHER color
+            this.turn = this.aiColor;
+        } else {
+            this.turn = (this.turn === 'red') ? 'black' : 'red';
+        }
+        
         this.render();
 
-        if (this.turn === 'black') {
+        if (this.turn === this.aiColor && !this.isGameOver) {
             await this.aiMove();
         }
     }
 
     async aiMove() {
         this.updateStatus("AI 正在深度思考...");
-        
-        // --- 這裡將來會運行 MCTS 邏輯 ---
-        // 目前先用一個隨機邏輯作為占位符，確保遊戲可玩
-        const moves = this.getValidMoves('black');
+        await new Promise(r => setTimeout(r, 1000));
+
+        const moves = this.getValidMoves(this.aiColor);
         if (moves.length === 0) {
-            this.endGame('red');
+            this.endGame(this.playerColor);
             return;
         }
 
-        await new Promise(r => setTimeout(r, 1000)); // 模擬思考
-
+        // TODO: Integrate MCTS/ONNX here for real AI
         const move = moves[Math.floor(Math.random() * moves.length)];
         if (move.type === 'flip') {
-            this.flipPiece(move.pos[0], move.pos[1]);
+            const piece = this.board[move.pos[0]][move.pos[1]];
+            piece.revealed = true;
+            this.history.push({ ...move, name: piece.name });
         } else {
-            this.board[move.to[0]][move.to[1]] = this.board[move.from[0]][move.from[1]];
+            const piece = this.board[move.from[0]][move.from[1]];
+            const captured = this.board[move.to[0]][move.to[1]];
+            this.board[move.to[0]][move.to[1]] = piece;
             this.board[move.from[0]][move.from[1]] = null;
-            this.history.push(move);
+            this.history.push({ ...move, piece: piece.name, captured: captured ? captured.name : null });
         }
 
+        this.render();
         this.nextTurn();
     }
 
@@ -188,17 +208,16 @@ class Game {
                 if (!p.revealed) {
                     moves.push({ type: 'flip', pos: [r, c], player });
                 } else if (p.color === player) {
-                    // Check moves
-                    const dirs = [[0, 1], [0, -1], [1, 0], [-1, 0]];
+                    const dirs = [[0,1],[0,-1],[1,0],[-1,0]];
                     for (let [dr, dc] of dirs) {
                         let tr = r + dr, tc = c + dc;
-                        if (tr >= 0 && tr < 4 && tc >= 0 && tc < 8 && this.canMove(r, c, tr, tc)) {
-                            moves.push({ type: 'move', from: [r, c], to: [tr, tc], player, captured: this.board[tr][tc] ? this.board[tr][tc].name : null });
+                        if (tr >= 0 && tr < 4 && tc >= 0 && tc < 8 && this.canMove(this.board, r, c, tr, tc)) {
+                            moves.push({ type: 'move', from: [r, c], to: [tr, tc], player });
                         }
                     }
-                    if (p.level === 2) { // 炮的特殊跳躍
-                        for (let tr = 0; tr < 4; tr++) if (this.canMove(r, c, tr, c)) moves.push({ type: 'move', from: [r, c], to: [tr, c], player, captured: this.board[tr][c] ? this.board[tr][c].name : null });
-                        for (let tc = 0; tc < 8; tc++) if (this.canMove(r, c, r, tc)) moves.push({ type: 'move', from: [r, c], to: [r, tc], player, captured: this.board[r][tc] ? this.board[r][tc].name : null });
+                    if (p.level === 2) { 
+                        for (let tr = 0; tr < 4; tr++) if (this.canMove(this.board, r, c, tr, c)) moves.push({ type: 'move', from: [r, c], to: [tr, c], player });
+                        for (let tc = 0; tc < 8; tc++) if (this.canMove(this.board, r, c, r, tc)) moves.push({ type: 'move', from: [r, c], to: [r, tc], player });
                     }
                 }
             }
@@ -207,42 +226,29 @@ class Game {
     }
 
     checkWinner() {
-        const hasRed = this.board.flat().some(p => p && p.color === 'red');
-        const hasBlack = this.board.flat().some(p => p && p.color === 'black');
-        if (!hasRed) return 'black';
-        if (!hasBlack) return 'red';
+        const redPieces = this.board.flat().filter(p => p && p.color === 'red').length;
+        const blackPieces = this.board.flat().filter(p => p && p.color === 'black').length;
+        if (redPieces === 0) return 'black';
+        if (blackPieces === 0) return 'red';
         return null;
     }
 
     async endGame(winner) {
         this.isGameOver = true;
-        this.updateStatus(`遊戲結束！${winner === 'red' ? '紅方' : '黑方'} 獲勝`);
-        alert(`恭喜！${winner === 'red' ? '紅方' : '黑方'} 獲勝`);
-        
-        // 上傳資料到 Google Sheets
+        const winnerName = winner === 'red' ? '紅方' : '黑方';
+        this.updateStatus(`遊戲結束！${winnerName} 獲勝`);
+        alert(`遊戲結束！${winnerName} 獲勝`);
         await this.uploadData(winner);
     }
 
     async uploadData(winner) {
-        const url = "__GOOGLE_SCRIPT_URL__"; // GitHub Actions 會替換此處
-        if (url.startsWith("__")) return; 
-
-        const payload = {
-            winner,
-            steps: this.history.length,
-            history: this.history
-        };
-
+        const url = "https://script.google.com/macros/s/AKfycby16bcSzU4wtsMQ1WszgeS6SGOGepJEITNIAOX-MSfMZj7OvqTsuNv9buoVAW1_aEllxg/exec";
+        if (!url || url.startsWith("__")) return; 
+        const payload = { winner, steps: this.history.length, history: this.history };
         try {
-            await fetch(url, {
-                method: 'POST',
-                mode: 'no-cors',
-                body: JSON.stringify(payload)
-            });
+            await fetch(url, { method: 'POST', mode: 'no-cors', body: JSON.stringify(payload) });
             this.log("棋譜已上傳至雲端");
-        } catch (e) {
-            console.error("上傳失敗", e);
-        }
+        } catch (e) { console.error("上傳失敗", e); }
     }
 
     updateStatus(msg) {
@@ -260,31 +266,27 @@ class Game {
     render() {
         const boardEl = document.getElementById('board');
         boardEl.innerHTML = '';
-        
         for (let r = 0; r < 4; r++) {
             for (let c = 0; c < 8; c++) {
                 const cell = document.createElement('div');
                 cell.className = 'cell';
                 cell.dataset.r = r;
                 cell.dataset.c = c;
-                
                 const piece = this.board[r][c];
                 if (piece) {
                     const pieceEl = document.createElement('div');
                     pieceEl.className = `piece ${piece.revealed ? 'revealed ' + piece.color : 'hidden'}`;
                     if (piece.revealed) pieceEl.innerText = piece.name;
-                    if (this.selected && this.selected[0] === r && this.selected[1] === c) {
-                        pieceEl.classList.add('selected');
-                    }
+                    if (this.selected && this.selected[0] === r && this.selected[1] === c) pieceEl.classList.add('selected');
                     cell.appendChild(pieceEl);
                 }
                 boardEl.appendChild(cell);
             }
         }
-
-        // Update active player UI
-        document.querySelector('.player-info.red').classList.toggle('active', this.turn === 'red');
-        document.querySelector('.player-info.black').classList.toggle('active', this.turn === 'black');
+        if (this.playerColor) {
+            document.querySelector('.player-info.red').classList.toggle('active', this.turn === 'red');
+            document.querySelector('.player-info.black').classList.toggle('active', this.turn === 'black');
+        }
     }
 }
 
