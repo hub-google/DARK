@@ -61,30 +61,32 @@ class Game {
     handleBoardClick(e) {
         if (this.isGameOver) return;
         
-        // Only allow clicking if it's player's turn or first move
-        if (this.turn !== 'first' && this.turn !== this.playerColor) return;
+        // 嚴格限制：只有輪到玩家時才能操作
+        if (this.turn === 'first' || this.turn === this.playerColor) {
+            const cell = e.target.closest('.cell');
+            if (!cell) return;
 
-        const cell = e.target.closest('.cell');
-        if (!cell) return;
+            const r = parseInt(cell.dataset.r);
+            const c = parseInt(cell.dataset.c);
+            const piece = this.board[r][c];
 
-        const r = parseInt(cell.dataset.r);
-        const c = parseInt(cell.dataset.c);
-        const piece = this.board[r][c];
+            // 1. 翻牌邏輯：任何隱藏子都能翻
+            if (piece && !piece.revealed) {
+                this.flipPiece(r, c);
+                return;
+            }
 
-        // 1. Flip Logic
-        if (piece && !piece.revealed) {
-            this.flipPiece(r, c);
-            return;
-        }
+            // 2. 選取與移動邏輯
+            if (this.turn === 'first') return; 
 
-        // 2. Select/Move Logic
-        if (this.turn === 'first') return; 
-
-        if (piece && piece.revealed && piece.color === this.playerColor) {
-            this.selected = [r, c];
-            this.render();
-        } else if (this.selected) {
-            this.tryMove(this.selected, [r, c]);
+            // 修正：選取時必須確認是自己的顏色
+            if (piece && piece.revealed && piece.color === this.playerColor) {
+                this.selected = [r, c];
+                this.render();
+            } else if (this.selected) {
+                // 移動目標可以是空地或對手的子（吃子）
+                this.tryMove(this.selected, [r, c]);
+            }
         }
     }
 
@@ -92,12 +94,11 @@ class Game {
         const piece = this.board[r][c];
         piece.revealed = true;
         
-        // Handle first flip
+        // 首翻定色
         if (this.turn === 'first') {
             this.playerColor = piece.color;
             this.aiColor = (piece.color === 'red') ? 'black' : 'red';
-            this.updateStatus(`你翻到了 ${piece.name}，你是 ${piece.color === 'red' ? '紅方' : '黑方'}`);
-            // In standard rules, flipping ends the turn
+            this.updateStatus(`首翻定色：你是 ${piece.color === 'red' ? '紅方' : '黑方'}`);
         }
 
         this.history.push({ type: 'flip', pos: [r, c], player: this.turn, name: piece.name });
@@ -108,8 +109,10 @@ class Game {
     tryMove(from, to) {
         const [sr, sc] = from;
         const [tr, tc] = to;
-        if (this.canMove(this.board, sr, sc, tr, tc)) {
-            const piece = this.board[sr][sc];
+        const piece = this.board[sr][sc];
+
+        // 二次檢查：確保移動的是自己的棋子，且目前是自己的回合
+        if (piece && piece.color === this.turn && this.canMove(this.board, sr, sc, tr, tc)) {
             const captured = this.board[tr][tc];
             this.board[tr][tc] = piece;
             this.board[sr][sc] = null;
@@ -117,8 +120,12 @@ class Game {
             this.selected = null;
             this.render();
             this.nextTurn();
+        } else {
+            this.selected = null;
+            this.render();
         }
     }
+
 
     canMove(b, sr, sc, tr, tc) {
         const a = b[sr][sc];
