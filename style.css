@@ -147,22 +147,23 @@ main {
 }
 
 .piece.hidden {
-    background: linear-gradient(135deg, #444, #222);
+    background: linear-gradient(135deg, #666, #333);
     color: transparent;
-    box-shadow: inset 0 0 10px rgba(0,0,0,0.5);
+    box-shadow: inset 0 0 10px rgba(0,0,0,0.5), 0 2px 5px rgba(0,0,0,0.3);
 }
 
 .piece.revealed.red {
     background: radial-gradient(circle at 30% 30%, #ff6b6b, #c0392b);
     color: #fff;
-    box-shadow: 0 4px 15px rgba(231, 76, 60, 0.4);
+    box-shadow: 0 4px 15px rgba(231, 76, 60, 0.5);
 }
 
 .piece.revealed.black {
-    background: radial-gradient(circle at 30% 30%, #34495e, #1a252f);
-    color: #ddd;
-    box-shadow: 0 4px 15px rgba(0,0,0,0.6);
+    background: radial-gradient(circle at 30% 30%, #5d6d7e, #2e4053);
+    color: #ffffff;
+    box-shadow: 0 4px 15px rgba(255, 255, 255, 0.15);
 }
+
 
 .piece.selected {
     border-color: var(--accent-gold);
