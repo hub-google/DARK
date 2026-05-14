@@ -10,6 +10,7 @@ class Game {
         this.playerColor = null;
         this.aiColor = null;
         this.selected = null;
+        this.lastMove = null;
         this.history = [];
         this.isGameOver = false;
         this.session = null;
@@ -178,28 +179,120 @@ class Game {
         }
     }
 
-    async aiMove() {
-        this.updateStatus("AI 正在深度思考...");
-        await new Promise(r => setTimeout(r, 1000));
+    // ==========================================
+    // AI 推理引擎 (對齊 train_ai.py 的 board_to_tensor)
+    // ==========================================
 
-        const moves = this.getValidMoves(this.aiColor);
-        if (moves.length === 0) {
-            this.endGame(this.playerColor);
-            return;
+    boardToTensor(board, turn, lastMove) {
+        // 6 通道 x 4 x 8
+        const tensor = new Float32Array(6 * 4 * 8);
+        const idx = (ch, r, c) => ch * 32 + r * 8 + c;
+
+        let totalHidden = 0;
+        for (let r = 0; r < 4; r++)
+            for (let c = 0; c < 8; c++)
+                if (board[r][c] && !board[r][c].revealed) totalHidden++;
+
+        for (let r = 0; r < 4; r++) {
+            for (let c = 0; c < 8; c++) {
+                const p = board[r][c];
+                if (!p) continue;
+                if (!p.revealed) {
+                    tensor[idx(2, r, c)] = 1.0; // 暗子通道
+                    tensor[idx(3, r, c)] = totalHidden / 32.0;
+                } else {
+                    const val = p.level / 7.0;
+                    if (p.color === turn) tensor[idx(0, r, c)] = val; // 我方
+                    else                  tensor[idx(1, r, c)] = val; // 敵方
+                }
+            }
         }
 
-        // TODO: Integrate MCTS/ONNX here for real AI
-        const move = moves[Math.floor(Math.random() * moves.length)];
+        // 最後一手標記
+        if (lastMove) {
+            if (lastMove.type === 'flip') {
+                const [r, c] = lastMove.pos;
+                tensor[idx(4, r, c)] = 1.0;
+            } else {
+                const [sr, sc] = lastMove.from;
+                const [tr, tc] = lastMove.to;
+                tensor[idx(4, sr, sc)] = 1.0;
+                tensor[idx(5, tr, tc)] = 1.0;
+            }
+        }
+        return tensor;
+    }
+
+    actionToId(move) {
         if (move.type === 'flip') {
-            const piece = this.board[move.pos[0]][move.pos[1]];
-            piece.revealed = true;
-            this.history.push({ ...move, name: piece.name });
+            const [r, c] = move.pos;
+            return r * 8 + c; // 0~31
         } else {
-            const piece = this.board[move.from[0]][move.from[1]];
-            const captured = this.board[move.to[0]][move.to[1]];
-            this.board[move.to[0]][move.to[1]] = piece;
-            this.board[move.from[0]][move.from[1]] = null;
-            this.history.push({ ...move, piece: piece.name, captured: captured ? captured.name : null });
+            const [sr, sc] = move.from;
+            const [tr, tc] = move.to;
+            const fromIdx = sr * 8 + sc;
+            const toIdx   = tr * 8 + tc;
+            return 32 + fromIdx * 32 + toIdx; // 32~1055
+        }
+    }
+
+    async runInference(board, turn, lastMove) {
+        if (!this.session) return null;
+        try {
+            const tensorData = this.boardToTensor(board, turn, lastMove);
+            const inputTensor = new ort.Tensor('float32', tensorData, [1, 6, 4, 8]);
+            const output = await this.session.run({ input: inputTensor });
+            // policy 輸出為 logits，需要 softmax
+            const logits = output.policy ? output.policy.data : Object.values(output)[0].data;
+            const maxL = Math.max(...logits);
+            const exps = Array.from(logits).map(x => Math.exp(x - maxL));
+            const sumE = exps.reduce((a, b) => a + b, 0);
+            return exps.map(x => x / sumE); // 回傳機率分布
+        } catch(e) {
+            console.error('ONNX inference error:', e);
+            return null;
+        }
+    }
+
+    async aiMove() {
+        this.updateStatus('AI 正在思考...');
+        await new Promise(r => setTimeout(r, 600));
+
+        const moves = this.getValidMoves(this.aiColor);
+        if (moves.length === 0) { this.endGame(this.playerColor); return; }
+
+        let chosenMove = null;
+
+        // 用訓練好的模型選步
+        const probs = await this.runInference(this.board, this.aiColor, this.lastMove);
+        if (probs) {
+            // 找合法走步中機率最高的
+            let bestProb = -1;
+            for (const move of moves) {
+                const aid = this.actionToId(move);
+                if (probs[aid] > bestProb) {
+                    bestProb = probs[aid];
+                    chosenMove = move;
+                }
+            }
+        } else {
+            // Fallback: 模型未就緒時隨機走
+            chosenMove = moves[Math.floor(Math.random() * moves.length)];
+        }
+
+        // 執行走步
+        if (chosenMove.type === 'flip') {
+            const piece = this.board[chosenMove.pos[0]][chosenMove.pos[1]];
+            piece.revealed = true;
+            this.history.push({ ...chosenMove, name: piece.name });
+            this.lastMove = chosenMove;
+        } else {
+            const piece    = this.board[chosenMove.from[0]][chosenMove.from[1]];
+            const captured = this.board[chosenMove.to[0]][chosenMove.to[1]];
+            this.board[chosenMove.to[0]][chosenMove.to[1]] = piece;
+            this.board[chosenMove.from[0]][chosenMove.from[1]] = null;
+            this.history.push({ ...chosenMove, piece: piece.name, captured: captured?.name ?? null });
+            this.lastMove = chosenMove;
         }
 
         this.render();
