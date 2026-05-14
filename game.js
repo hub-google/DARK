@@ -326,12 +326,15 @@ class Game {
     }
 
     checkWinner() {
-        const redPieces = this.board.flat().filter(p => p && p.color === 'red').length;
+        const redPieces   = this.board.flat().filter(p => p && p.color === 'red').length;
         const blackPieces = this.board.flat().filter(p => p && p.color === 'black').length;
-        if (redPieces === 0) return 'black';
+        if (redPieces === 0)   return 'black';
         if (blackPieces === 0) return 'red';
+        // 超過 120 手強制平局，防止死局
+        if (this.history.length >= 120) return 'draw';
         return null;
     }
+
 
     async endGame(winner) {
         this.isGameOver = true;
