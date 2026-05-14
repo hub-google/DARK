@@ -11,7 +11,9 @@ class Game {
         this.aiColor = null;
         this.selected = null;
         this.lastMove = null;
+        this.movesSinceCapture = 0;
         this.history = [];
+
         this.isGameOver = false;
         this.session = null;
         
@@ -117,7 +119,10 @@ class Game {
             const captured = this.board[tr][tc];
             this.board[tr][tc] = piece;
             this.board[sr][sc] = null;
+            if (captured) this.movesSinceCapture = 0;
+            else          this.movesSinceCapture++;
             this.history.push({ type: 'move', from, to, player: this.turn, piece: piece.name, captured: captured ? captured.name : null });
+
             this.selected = null;
             this.render();
             this.nextTurn();
@@ -330,8 +335,8 @@ class Game {
         const blackPieces = this.board.flat().filter(p => p && p.color === 'black').length;
         if (redPieces === 0)   return 'black';
         if (blackPieces === 0) return 'red';
-        // 超過 120 手強制平局，防止死局
-        if (this.history.length >= 120) return 'draw';
+        // 和局條件：超過 160 手、或連續 30 手沒吃子
+        if (this.history.length >= 160 || this.movesSinceCapture >= 30) return 'draw';
         return null;
     }
 
