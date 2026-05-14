@@ -11,7 +11,7 @@ class Game {
         this.aiColor = null;
         this.selected = null;
         this.lastMove = null;
-        this.movesSinceCapture = 0;
+        this.movesSinceProgress = 0;
         this.history = [];
 
         this.isGameOver = false;
@@ -104,7 +104,9 @@ class Game {
             this.updateStatus(`首翻定色：你是 ${piece.color === 'red' ? '紅方' : '黑方'}`);
         }
 
+        this.movesSinceProgress = 0; // 翻子視為進展
         this.history.push({ type: 'flip', pos: [r, c], player: this.turn, name: piece.name });
+
         this.render();
         this.nextTurn();
     }
@@ -119,8 +121,8 @@ class Game {
             const captured = this.board[tr][tc];
             this.board[tr][tc] = piece;
             this.board[sr][sc] = null;
-            if (captured) this.movesSinceCapture = 0;
-            else          this.movesSinceCapture++;
+            if (captured) this.movesSinceProgress = 0; // 吃子視為進展
+            else          this.movesSinceProgress++;
             this.history.push({ type: 'move', from, to, player: this.turn, piece: piece.name, captured: captured ? captured.name : null });
 
             this.selected = null;
@@ -290,12 +292,15 @@ class Game {
             const piece = this.board[chosenMove.pos[0]][chosenMove.pos[1]];
             piece.revealed = true;
             this.history.push({ ...chosenMove, name: piece.name });
+            this.movesSinceProgress = 0; // 翻子視為進展
             this.lastMove = chosenMove;
         } else {
             const piece    = this.board[chosenMove.from[0]][chosenMove.from[1]];
             const captured = this.board[chosenMove.to[0]][chosenMove.to[1]];
             this.board[chosenMove.to[0]][chosenMove.to[1]] = piece;
             this.board[chosenMove.from[0]][chosenMove.from[1]] = null;
+            if (captured) this.movesSinceProgress = 0; // 吃子視為進展
+            else          this.movesSinceProgress++;
             this.history.push({ ...chosenMove, piece: piece.name, captured: captured?.name ?? null });
             this.lastMove = chosenMove;
         }
@@ -335,8 +340,8 @@ class Game {
         const blackPieces = this.board.flat().filter(p => p && p.color === 'black').length;
         if (redPieces === 0)   return 'black';
         if (blackPieces === 0) return 'red';
-        // 和局條件：超過 160 手、或連續 30 手沒吃子
-        if (this.history.length >= 160 || this.movesSinceCapture >= 30) return 'draw';
+        // 和局條件：連續 50 手無進展（沒吃子且沒翻子）
+        if (this.movesSinceProgress >= 50) return 'draw';
         return null;
     }
 
