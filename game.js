@@ -132,7 +132,9 @@ class Game {
 
         this.movesSinceProgress = 0; // 翻子視為進展
         this.historyHashes.clear();  // 💡 不可逆動作，清空歷史
-        this.history.push({ type: 'flip', pos: [r, c], player: this.turn, name: piece.name });
+        const m = { type: 'flip', pos: [r, c], player: this.turn, name: piece.name };
+        this.history.push(m);
+        this.logMove(m);
 
         this.render();
         this.nextTurn();
@@ -172,7 +174,9 @@ class Game {
                 this.historyHashes.set(h, (this.historyHashes.get(h) || 0) + 1);
             }
             
-            this.history.push({ type: 'move', from, to, player: this.turn, piece: piece.name, captured: captured ? captured.name : null });
+            const m = { type: 'move', from, to, player: this.turn, piece: piece.name, captured: captured ? captured.name : null };
+            this.history.push(m);
+            this.logMove(m);
             this.selected = null;
             this.render();
             this.nextTurn();
@@ -228,6 +232,13 @@ class Game {
         // 初始狀態記錄
         if (this.historyHashes.size === 0) {
             this.historyHashes.set(this.getBoardHash(this.board, this.turn), 1);
+        }
+
+        // 動態更新狀態標籤
+        if (this.turn === this.playerColor) {
+            document.getElementById('ai-status').innerText = `輪到你了 (${this.playerColor === 'red' ? '紅方' : '黑方'})，請進行移動或翻牌`;
+        } else if (this.turn === this.aiColor) {
+            document.getElementById('ai-status').innerText = `輪到 AI (${this.aiColor === 'red' ? '紅方' : '黑方'}) 思考中...`;
         }
 
         this.render();
@@ -728,7 +739,9 @@ class Game {
             const piece = this.board[chosenMove.pos[0]][chosenMove.pos[1]];
             piece.revealed = true;
             this.historyHashes.clear(); // 💡 翻牌清空歷史
-            this.history.push({ ...chosenMove, name: piece.name });
+            const m = { ...chosenMove, name: piece.name };
+            this.history.push(m);
+            this.logMove(m);
             this.movesSinceProgress = 0;
             this.lastMove = chosenMove;
         } else {
@@ -745,7 +758,9 @@ class Game {
                 const h = this.getBoardHash(this.board, this.playerColor);
                 this.historyHashes.set(h, (this.historyHashes.get(h) || 0) + 1);
             }
-            this.history.push({ ...chosenMove, piece: piece.name, captured: captured?.name ?? null });
+            const m = { ...chosenMove, piece: piece.name, captured: captured?.name ?? null };
+            this.history.push(m);
+            this.logMove(m);
             this.lastMove = chosenMove;
         }
 
@@ -834,6 +849,21 @@ class Game {
     updateStatus(msg) {
         document.getElementById('ai-status').innerText = msg;
         this.log(msg);
+    }
+
+    logMove(move) {
+        const playerStr = move.player === this.playerColor ? '你' : 'AI';
+        const colorStr = move.player === 'red' ? '紅方' : '黑方';
+        if (move.type === 'flip') {
+            this.log(`${playerStr}(${colorStr}) 翻開了 [${move.name}]`);
+        } else {
+            const pieceName = move.piece;
+            if (move.captured) {
+                this.log(`${playerStr}(${colorStr}) 移動 [${pieceName}] 吃掉了 [${move.captured}]`);
+            } else {
+                this.log(`${playerStr}(${colorStr}) 移動了 [${pieceName}]`);
+            }
+        }
     }
 
     log(msg) {
