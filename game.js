@@ -409,6 +409,47 @@ class Game {
         return score;
     }
 
+    getHeuristicValue(board, turn) {
+        const pieceVals = {
+            1:1000, 2:850, 3:650, 4:450, 5:250, 6:550, 7:150,
+            [-1]:-1000, [-2]:-850, [-3]:-650, [-4]:-450, [-5]:-250, [-6]:-550, [-7]:-150,
+            0:0, 10:0
+        };
+        
+        let redPawnCount = 0;
+        let blackPawnCount = 0;
+        for (let r = 0; r < 4; r++) {
+            for (let c = 0; c < 8; c++) {
+                const p = board[r][c];
+                if (p && p.revealed) {
+                    const pv = p.color === 'red' ? (8 - p.level) : -(8 - p.level);
+                    if (pv === 7) redPawnCount++;
+                    if (pv === -7) blackPawnCount++;
+                }
+            }
+        }
+        
+        const vals = { ...pieceVals };
+        if (blackPawnCount === 0) vals[1] += 500;
+        if (redPawnCount === 0) vals[-1] -= 500;
+        
+        let score = 0;
+        for (let r = 0; r < 4; r++) {
+            for (let c = 0; c < 8; c++) {
+                const p = board[r][c];
+                if (p) {
+                    if (p.revealed) {
+                        const pv = p.color === 'red' ? (8 - p.level) : -(8 - p.level);
+                        score += vals[pv] || 0;
+                    }
+                }
+            }
+        }
+        
+        let h = Math.max(Math.min(score / 5000.0, 1.0), -1.0);
+        return turn === 'red' ? h : -h;
+    }
+
     async runInferenceWithCustomBoard(board, turn, lastMove) {
         if (!this.session) return null;
         try {
@@ -588,7 +629,15 @@ class Game {
                     const output = await this.runInferenceWithCustomBoard(sb, ct, curr.move);
                     if (output) {
                         const { probs: p_c, value: nv } = output;
-                        val = nv;
+                        let hiddenCount = 0;
+                        for (let r = 0; r < 4; r++) {
+                            for (let c = 0; c < 8; c++) {
+                                const p = sb[r][c];
+                                if (p && !p.revealed) hiddenCount++;
+                            }
+                        }
+                        const bf = 0.2 + 0.5 * (1.0 - (hiddenCount / 32.0));
+                        val = (1.0 - bf) * nv + bf * this.getHeuristicValue(sb, ct);
                         
                         let sumLeafP = 0;
                         const leafProbs = leafMoves.map(m => {
