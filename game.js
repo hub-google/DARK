@@ -3,6 +3,30 @@
  * Logic synchronized with train_ai.py
  */
 
+class MCTSNode {
+    constructor(p, parent = null, move = null) {
+        this.p = p;          // 💡 先驗機率 (Prior Probability)
+        this.parent = parent;
+        this.move = move;
+        this.children = new Map(); // actionId -> MCTSNode
+        this.v = 0;          // 💡 訪問次數 (Visit Count)
+        this.vs = 0.0;       // 💡 累積價值價值總和 (Value Sum)
+    }
+
+    get Q() {
+        return this.v > 0 ? this.vs / this.v : 0;
+    }
+
+    ucb(totalV) {
+        const c_puct = 2.0; // 💡 探索因子，對齊 Python 端
+        return this.Q + c_puct * this.p * Math.sqrt(totalV) / (1 + this.v);
+    }
+
+    isLeaf() {
+        return this.children.size === 0;
+    }
+}
+
 class Game {
     constructor() {
         this.board = Array(4).fill(null).map(() => Array(8).fill(null));
@@ -371,8 +395,206 @@ class Game {
         return score;
     }
 
+    async runInferenceWithCustomBoard(board, turn, lastMove) {
+        if (!this.session) return null;
+        try {
+            const tensorData = this.boardToTensor(board, turn, lastMove);
+            const inputTensor = new ort.Tensor('float32', tensorData, [1, 34, 4, 8]);
+            const output = await this.session.run({ input: inputTensor });
+            
+            // 解析 policy logits
+            const logits = output.policy ? output.policy.data : Object.values(output)[0].data;
+            const maxL = Math.max(...logits);
+            const exps = Array.from(logits).map(x => Math.exp(x - maxL));
+            const sumE = exps.reduce((a, b) => a + b, 0);
+            const probs = exps.map(x => x / sumE);
+            
+            // 解析 value 勝率預測
+            const valData = output.value ? output.value.data : Object.values(output)[1].data;
+            const value = valData[0];
+            
+            return { probs, value };
+        } catch(e) {
+            console.error('ONNX custom board inference error:', e);
+            return null;
+        }
+    }
+
+    getRemainingHiddenPool() {
+        const pool = [];
+        const counts = {};
+        
+        const piecesInfo = [
+            {name: '帥', level: 7, color: 'red', count: 1}, {name: '仕', level: 6, color: 'red', count: 2},
+            {name: '相', level: 5, color: 'red', count: 2}, {name: '俥', level: 4, color: 'red', count: 2},
+            {name: '傌', level: 3, color: 'red', count: 2}, {name: '炮', level: 2, color: 'red', count: 2},
+            {name: '兵', level: 1, color: 'red', count: 5},
+            {name: '將', level: 7, color: 'black', count: 1}, {name: '士', level: 6, color: 'black', count: 2},
+            {name: '象', level: 5, color: 'black', count: 2}, {name: '車', level: 4, color: 'black', count: 2},
+            {name: '馬', level: 3, color: 'black', count: 2}, {name: '炮', level: 2, color: 'black', count: 2},
+            {name: '卒', level: 1, color: 'black', count: 5}
+        ];
+        
+        for (const info of piecesInfo) {
+            counts[`${info.color}_${info.name}`] = info.count;
+        }
+        
+        for (let r = 0; r < 4; r++) {
+            for (let c = 0; c < 8; c++) {
+                const p = this.board[r][c];
+                if (p && p.revealed) {
+                    counts[`${p.color}_${p.name}`]--;
+                }
+            }
+        }
+        
+        for (const record of this.history) {
+            if (record.captured) {
+                const capturerColor = record.player;
+                const capturedColor = capturerColor === 'red' ? 'black' : 'red';
+                counts[`${capturedColor}_${record.captured}`]--;
+            }
+        }
+        
+        for (const key in counts) {
+            const parts = key.split('_');
+            const color = parts[0];
+            const name = parts[1];
+            const info = piecesInfo.find(i => i.color === color && i.name === name);
+            const level = info.level;
+            
+            for (let i = 0; i < Math.max(0, counts[key]); i++) {
+                pool.push({ name, level, color, revealed: false });
+            }
+        }
+        
+        return pool;
+    }
+
+    async runMCTS(simulations = 60) {
+        if (!this.session) return null;
+        
+        const { normal: moves } = this.getValidMoves(this.aiColor);
+        if (moves.length === 0) return null;
+        
+        const root = new MCTSNode(1.0);
+        const rawProbs = await this.runInference(this.board, this.aiColor, this.lastMove);
+        if (!rawProbs) return null;
+        
+        let sumP = 0;
+        const validProbs = moves.map(m => {
+            const aid = this.actionToId(m);
+            const p = rawProbs[aid] || 0;
+            sumP += p;
+            return p;
+        });
+        
+        for (let i = 0; i < moves.length; i++) {
+            const m = moves[i];
+            const aid = this.actionToId(m);
+            const prior = sumP > 0 ? validProbs[i] / sumP : 1.0 / moves.length;
+            root.children.set(aid, new MCTSNode(prior, root, m));
+        }
+        
+        for (let sim = 0; sim < simulations; sim++) {
+            let sb = JSON.parse(JSON.stringify(this.board));
+            let ct = this.aiColor;
+            let sd = [];
+            
+            let path = [root];
+            let curr = root;
+            let pool = this.getRemainingHiddenPool();
+            
+            while (!curr.isLeaf()) {
+                let bestAid = null;
+                let bestUcb = -Infinity;
+                
+                for (const [aid, child] of curr.children) {
+                    const u = child.ucb(root.v);
+                    if (u > bestUcb) {
+                        bestUcb = u;
+                        bestAid = aid;
+                    }
+                }
+                
+                if (bestAid === null) break;
+                curr = curr.children.get(bestAid);
+                path.push(curr);
+                
+                const m = curr.move;
+                if (m.type === 'flip') {
+                    const [r, c] = m.pos;
+                    if (pool.length > 0) {
+                        const idx = Math.floor(Math.random() * pool.length);
+                        const p = pool.splice(idx, 1)[0];
+                        sb[r][c] = { ...p, revealed: true };
+                    } else {
+                        sb[r][c] = null;
+                    }
+                } else {
+                    const [sr, sc] = m.from;
+                    const [tr, tc] = m.to;
+                    const target = sb[tr][tc];
+                    if (target) sd.push(target);
+                    sb[tr][tc] = sb[sr][sc];
+                    sb[sr][sc] = null;
+                }
+                
+                ct = ct === 'red' ? 'black' : 'red';
+            }
+            
+            let val = 0.0;
+            const { normal: leafMoves } = this.getValidMoves(ct, sb);
+            
+            if (leafMoves.length === 0) {
+                val = -1.0; 
+            } else {
+                const output = await this.runInferenceWithCustomBoard(sb, ct, curr.move);
+                if (output) {
+                    const { probs: p_c, value: nv } = output;
+                    val = nv;
+                    
+                    let sumLeafP = 0;
+                    const leafProbs = leafMoves.map(m => {
+                        const aid = this.actionToId(m);
+                        const p = p_c[aid] || 0;
+                        sumLeafP += p;
+                        return p;
+                    });
+                    
+                    for (let i = 0; i < leafMoves.length; i++) {
+                        const m = leafMoves[i];
+                        const aid = this.actionToId(m);
+                        const prior = sumLeafP > 0 ? leafProbs[i] / sumLeafP : 1.0 / leafMoves.length;
+                        curr.children.set(aid, new MCTSNode(prior, curr, m));
+                    }
+                }
+            }
+            
+            let cv = -val;
+            for (let i = path.length - 1; i >= 1; i--) {
+                const node = path[i];
+                node.v += 1;
+                node.vs += cv;
+                cv = -cv;
+            }
+            root.v += 1;
+        }
+        
+        let bestAid = null;
+        let maxV = -1;
+        for (const [aid, child] of root.children) {
+            if (child.v > maxV) {
+                maxV = child.v;
+                bestAid = aid;
+            }
+        }
+        
+        return bestAid !== null ? root.children.get(bestAid).move : null;
+    }
+
     async aiMove() {
-        this.updateStatus('AI 正在思考...');
+        this.updateStatus('AI 正在思考 (MCTS 搜尋中)...');
         await new Promise(r => setTimeout(r, 600));
 
         const { normal: moves, repMoves } = this.getValidMoves(this.aiColor);
@@ -383,25 +605,28 @@ class Game {
             return;
         }
 
-        let chosenMove = null;
-        const probs = await this.runInference(this.board, this.aiColor, this.lastMove);
-        if (probs) {
-            let bestScore = -9999;
-            for (const move of moves) {
-                const aid = this.actionToId(move);
-                const policyProb = probs[aid] || 0;
-                const heuristic = this.getHeuristicScore(move, this.aiColor);
-                
-                // 💡 綜合 Policy 直覺大腦 (加權 15.0) 與 1-Step 戰術避險吃子啟發分數
-                const totalScore = policyProb * 15.0 + heuristic;
-                
-                if (totalScore > bestScore) {
-                    bestScore = totalScore;
-                    chosenMove = move;
+        // 💡 執行強大的蒙地卡羅樹搜尋 (MCTS)，對齊 Python 世界冠軍級算力
+        let chosenMove = await this.runMCTS(60);
+        
+        // 🛡️ 雙重保險降級機制：若 MCTS 未能回傳 (例如 ONNX 異常)，降級使用直覺+戰術避險引擎
+        if (!chosenMove) {
+            console.log("MCTS Fallback to Heuristic engine");
+            const probs = await this.runInference(this.board, this.aiColor, this.lastMove);
+            if (probs) {
+                let bestScore = -9999;
+                for (const move of moves) {
+                    const aid = this.actionToId(move);
+                    const policyProb = probs[aid] || 0;
+                    const heuristic = this.getHeuristicScore(move, this.aiColor);
+                    const totalScore = policyProb * 15.0 + heuristic;
+                    if (totalScore > bestScore) {
+                        bestScore = totalScore;
+                        chosenMove = move;
+                    }
                 }
+            } else {
+                chosenMove = moves[Math.floor(Math.random() * moves.length)];
             }
-        } else {
-            chosenMove = moves[Math.floor(Math.random() * moves.length)];
         }
 
         // 執行走步
@@ -434,13 +659,13 @@ class Game {
         this.nextTurn();
     }
 
-    getValidMoves(player) {
+    getValidMoves(player, board = this.board) {
         let normal = [], repMoves = [];
         const nextTurn = (player === 'red' ? 'black' : 'red');
 
         for (let r = 0; r < 4; r++) {
             for (let c = 0; c < 8; c++) {
-                const p = this.board[r][c];
+                const p = board[r][c];
                 if (!p) continue;
                 if (!p.revealed) {
                     normal.push({ type: 'flip', pos: [r, c], player });
@@ -449,18 +674,18 @@ class Game {
                     const dirs = [[0,1],[0,-1],[1,0],[-1,0]];
                     for (let [dr, dc] of dirs) {
                         let tr = r + dr, tc = c + dc;
-                        if (tr >= 0 && tr < 4 && tc >= 0 && tc < 8 && this.canMove(this.board, r, c, tr, tc)) {
+                        if (tr >= 0 && tr < 4 && tc >= 0 && tc < 8 && this.canMove(board, r, c, tr, tc)) {
                             candidates.push({ type: 'move', from: [r, c], to: [tr, tc], player });
                         }
                     }
                     if (p.level === 2) { 
-                        for (let tr = 0; tr < 4; tr++) if (this.canMove(this.board, r, c, tr, c)) candidates.push({ type: 'move', from: [r, c], to: [tr, c], player });
-                        for (let tc = 0; tc < 8; tc++) if (this.canMove(this.board, r, c, r, tc)) candidates.push({ type: 'move', from: [r, c], to: [r, tc], player });
+                        for (let tr = 0; tr < 4; tr++) if (this.canMove(board, r, c, tr, c)) candidates.push({ type: 'move', from: [r, c], to: [tr, c], player });
+                        for (let tc = 0; tc < 8; tc++) if (this.canMove(board, r, c, r, tc)) candidates.push({ type: 'move', from: [r, c], to: [r, tc], player });
                     }
 
                     // 💡 檢查禁手規則
                     for (let m of candidates) {
-                        const tempB = JSON.parse(JSON.stringify(this.board));
+                        const tempB = JSON.parse(JSON.stringify(board));
                         const [sr, sc] = m.from; const [tr, tc] = m.to;
                         tempB[tr][tc] = tempB[sr][sc]; tempB[sr][sc] = null;
                         const h = this.getBoardHash(tempB, nextTurn);
