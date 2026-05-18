@@ -335,12 +335,25 @@ class Game {
             const tensorData = this.boardToTensor(board, turn, lastMove);
             const inputTensor = new ort.Tensor('float32', tensorData, [1, 34, 4, 8]);
             const output = await this.session.run({ input: inputTensor });
-            // policy 輸出為 logits，需要 softmax
-            const logits = output.policy ? output.policy.data : Object.values(output)[0].data;
-            const maxL = Math.max(...logits);
-            const exps = Array.from(logits).map(x => Math.exp(x - maxL));
+            
+            // 🔍 動態尋找長度為 1056 的 policy 輸出 (防止 ONNX 輸出鍵名變更或順序顛倒)
+            let policyData = null;
+            for (const key in output) {
+                if (output[key].data.length === 1056) {
+                    policyData = output[key].data;
+                    break;
+                }
+            }
+            
+            if (!policyData) {
+                console.error("ONNX inference: Could not find policy output with length 1056");
+                return null;
+            }
+            
+            const maxL = Math.max(...policyData);
+            const exps = Array.from(policyData).map(x => Math.exp(x - maxL));
             const sumE = exps.reduce((a, b) => a + b, 0);
-            return exps.map(x => x / sumE); // 回傳機率分布
+            return exps.map(x => x / sumE);
         } catch(e) {
             console.error('ONNX inference error:', e);
             return null;
@@ -350,7 +363,7 @@ class Game {
     getHeuristicScore(move, playerColor) {
         const opponentColor = playerColor === 'red' ? 'black' : 'red';
         if (move.type === 'flip') {
-            return 1.5; // 💡 給予翻牌基礎加權，與移動棋步平衡
+            return 1.5;
         }
         
         const [sr, sc] = move.from;
@@ -360,16 +373,13 @@ class Game {
         
         let score = 0;
         
-        // 1. ⚔️ 吃子收益：吃掉越高價值棋子分數越高
         if (target && target.color === opponentColor) {
             score += target.level * 10;
-            // 兵吃將額外大加分
             if (piece.level === 1 && target.level === 7) {
                 score += 50;
             }
         }
         
-        // 2. 🛡️ 避險判斷：模擬移動後是否會被對手反吃
         const tempBoard = JSON.parse(JSON.stringify(this.board));
         tempBoard[tr][tc] = tempBoard[sr][sc];
         tempBoard[sr][sc] = null;
@@ -388,7 +398,6 @@ class Game {
         }
         
         if (isDangerous) {
-            // 自身越高等級，越要避免送死 (扣除 8~56 分)
             score -= piece.level * 8;
         }
         
@@ -402,17 +411,29 @@ class Game {
             const inputTensor = new ort.Tensor('float32', tensorData, [1, 34, 4, 8]);
             const output = await this.session.run({ input: inputTensor });
             
-            // 解析 policy logits
-            const logits = output.policy ? output.policy.data : Object.values(output)[0].data;
-            const maxL = Math.max(...logits);
-            const exps = Array.from(logits).map(x => Math.exp(x - maxL));
+            // 🔍 獲取正確對應長度的 policy (1056) 與 value (1) 輸出，完全免疫 key 順序反轉
+            let policyData = null;
+            let valueData = null;
+            for (const key in output) {
+                const len = output[key].data.length;
+                if (len === 1056) {
+                    policyData = output[key].data;
+                } else if (len === 1) {
+                    valueData = output[key].data;
+                }
+            }
+            
+            if (!policyData || !valueData) {
+                console.error("ONNX custom inference: Shape mismatch!");
+                return null;
+            }
+            
+            const maxL = Math.max(...policyData);
+            const exps = Array.from(policyData).map(x => Math.exp(x - maxL));
             const sumE = exps.reduce((a, b) => a + b, 0);
             const probs = exps.map(x => x / sumE);
             
-            // 解析 value 勝率預測
-            const valData = output.value ? output.value.data : Object.values(output)[1].data;
-            const value = valData[0];
-            
+            const value = valueData[0];
             return { probs, value };
         } catch(e) {
             console.error('ONNX custom board inference error:', e);
@@ -497,88 +518,97 @@ class Game {
         }
         
         for (let sim = 0; sim < simulations; sim++) {
-            let sb = JSON.parse(JSON.stringify(this.board));
-            let ct = this.aiColor;
-            let sd = [];
-            
-            let path = [root];
-            let curr = root;
-            let pool = this.getRemainingHiddenPool();
-            
-            while (!curr.isLeaf()) {
-                let bestAid = null;
-                let bestUcb = -Infinity;
+            try {
+                let sb = JSON.parse(JSON.stringify(this.board));
+                let ct = this.aiColor;
+                let sd = [];
                 
-                for (const [aid, child] of curr.children) {
-                    const u = child.ucb(root.v);
-                    if (u > bestUcb) {
-                        bestUcb = u;
-                        bestAid = aid;
+                let path = [root];
+                let curr = root;
+                let pool = this.getRemainingHiddenPool();
+                
+                while (!curr.isLeaf()) {
+                    let bestAid = null;
+                    let bestUcb = -Infinity;
+                    
+                    for (const [aid, child] of curr.children) {
+                        const u = child.ucb(root.v);
+                        if (u > bestUcb) {
+                            bestUcb = u;
+                            bestAid = aid;
+                        }
                     }
-                }
-                
-                if (bestAid === null) break;
-                curr = curr.children.get(bestAid);
-                path.push(curr);
-                
-                const m = curr.move;
-                if (m.type === 'flip') {
-                    const [r, c] = m.pos;
-                    if (pool.length > 0) {
-                        const idx = Math.floor(Math.random() * pool.length);
-                        const p = pool.splice(idx, 1)[0];
-                        sb[r][c] = { ...p, revealed: true };
+                    
+                    if (bestAid === null) break;
+                    curr = curr.children.get(bestAid);
+                    path.push(curr);
+                    
+                    const m = curr.move;
+                    if (m.type === 'flip') {
+                        const [r, c] = m.pos;
+                        if (pool && pool.length > 0) {
+                            const idx = Math.floor(Math.random() * pool.length);
+                            const p = pool.splice(idx, 1)[0];
+                            if (p) {
+                                sb[r][c] = { ...p, revealed: true };
+                            } else {
+                                sb[r][c] = { name: '兵', level: 1, color: 'red', revealed: true };
+                            }
+                        } else {
+                            sb[r][c] = { name: '兵', level: 1, color: 'red', revealed: true }; // 🛡️ 剩餘暗子空時的防崩潰回退
+                        }
                     } else {
-                        sb[r][c] = null;
+                        const [sr, sc] = m.from;
+                        const [tr, tc] = m.to;
+                        const target = sb[tr][tc];
+                        if (target) sd.push(target);
+                        sb[tr][tc] = sb[sr][sc];
+                        sb[sr][sc] = null;
                     }
-                } else {
-                    const [sr, sc] = m.from;
-                    const [tr, tc] = m.to;
-                    const target = sb[tr][tc];
-                    if (target) sd.push(target);
-                    sb[tr][tc] = sb[sr][sc];
-                    sb[sr][sc] = null;
+                    
+                    ct = ct === 'red' ? 'black' : 'red';
                 }
                 
-                ct = ct === 'red' ? 'black' : 'red';
-            }
-            
-            let val = 0.0;
-            const { normal: leafMoves } = this.getValidMoves(ct, sb);
-            
-            if (leafMoves.length === 0) {
-                val = -1.0; 
-            } else {
-                const output = await this.runInferenceWithCustomBoard(sb, ct, curr.move);
-                if (output) {
-                    const { probs: p_c, value: nv } = output;
-                    val = nv;
-                    
-                    let sumLeafP = 0;
-                    const leafProbs = leafMoves.map(m => {
-                        const aid = this.actionToId(m);
-                        const p = p_c[aid] || 0;
-                        sumLeafP += p;
-                        return p;
-                    });
-                    
-                    for (let i = 0; i < leafMoves.length; i++) {
-                        const m = leafMoves[i];
-                        const aid = this.actionToId(m);
-                        const prior = sumLeafP > 0 ? leafProbs[i] / sumLeafP : 1.0 / leafMoves.length;
-                        curr.children.set(aid, new MCTSNode(prior, curr, m));
+                let val = 0.0;
+                const { normal: leafMoves } = this.getValidMoves(ct, sb);
+                
+                if (leafMoves.length === 0) {
+                    val = -1.0; 
+                } else {
+                    const output = await this.runInferenceWithCustomBoard(sb, ct, curr.move);
+                    if (output) {
+                        const { probs: p_c, value: nv } = output;
+                        val = nv;
+                        
+                        let sumLeafP = 0;
+                        const leafProbs = leafMoves.map(m => {
+                            const aid = this.actionToId(m);
+                            const p = p_c[aid] || 0;
+                            sumLeafP += p;
+                            return p;
+                        });
+                        
+                        for (let i = 0; i < leafMoves.length; i++) {
+                            const m = leafMoves[i];
+                            const aid = this.actionToId(m);
+                            const prior = sumLeafP > 0 ? leafProbs[i] / sumLeafP : 1.0 / leafMoves.length;
+                            curr.children.set(aid, new MCTSNode(prior, curr, m));
+                        }
                     }
                 }
+                
+                let cv = -val;
+                for (let i = path.length - 1; i >= 1; i--) {
+                    const node = path[i];
+                    node.v += 1;
+                    node.vs += cv;
+                    cv = -cv;
+                }
+                root.v += 1;
+            } catch(simError) {
+                console.error("MCTS single simulation error (safely caught):", simError);
+                break; // 🛡️ 安全中斷此輪模擬，防止整盤遊戲卡死
             }
-            
-            let cv = -val;
-            for (let i = path.length - 1; i >= 1; i--) {
-                const node = path[i];
-                node.v += 1;
-                node.vs += cv;
-                cv = -cv;
-            }
-            root.v += 1;
         }
         
         let bestAid = null;
@@ -605,8 +635,13 @@ class Game {
             return;
         }
 
-        // 💡 執行強大的蒙地卡羅樹搜尋 (MCTS)，對齊 Python 世界冠軍級算力
-        let chosenMove = await this.runMCTS(60);
+        // 💡 執行強大的蒙地卡羅樹搜尋 (MCTS)，對齊 Python 世界冠軍級算力，並附加頂級異常隔離
+        let chosenMove = null;
+        try {
+            chosenMove = await this.runMCTS(60);
+        } catch(mctsError) {
+            console.error("MCTS execution crashed! Falling back safely...", mctsError);
+        }
         
         // 🛡️ 雙重保險降級機制：若 MCTS 未能回傳 (例如 ONNX 異常)，降級使用直覺+戰術避險引擎
         if (!chosenMove) {
