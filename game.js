@@ -29,6 +29,7 @@ class MCTSNode {
 
 class Game {
     constructor() {
+        console.log("🔥 AI Engine V3 (Bulletproof MCTS + Safe ONNX Parser) Loaded!");
         this.board = Array(4).fill(null).map(() => Array(8).fill(null));
         this.turn = 'first'; // First move/flip decides color
         this.playerColor = null;
@@ -338,9 +339,9 @@ class Game {
             
             // 🔍 動態尋找長度為 1056 的 policy 輸出 (防止 ONNX 輸出鍵名變更或順序顛倒)
             let policyData = null;
-            for (const key in output) {
-                if (output[key].data.length === 1056) {
-                    policyData = output[key].data;
+            for (const tensor of Object.values(output)) {
+                if (tensor && tensor.data && tensor.data.length === 1056) {
+                    policyData = tensor.data;
                     break;
                 }
             }
@@ -350,7 +351,11 @@ class Game {
                 return null;
             }
             
-            const maxL = Math.max(...policyData);
+            let maxL = -Infinity;
+            for (let i = 0; i < policyData.length; i++) {
+                if (policyData[i] > maxL) maxL = policyData[i];
+            }
+            
             const exps = Array.from(policyData).map(x => Math.exp(x - maxL));
             const sumE = exps.reduce((a, b) => a + b, 0);
             return exps.map(x => x / sumE);
@@ -414,12 +419,13 @@ class Game {
             // 🔍 獲取正確對應長度的 policy (1056) 與 value (1) 輸出，完全免疫 key 順序反轉
             let policyData = null;
             let valueData = null;
-            for (const key in output) {
-                const len = output[key].data.length;
-                if (len === 1056) {
-                    policyData = output[key].data;
-                } else if (len === 1) {
-                    valueData = output[key].data;
+            for (const tensor of Object.values(output)) {
+                if (tensor && tensor.data) {
+                    if (tensor.data.length === 1056) {
+                        policyData = tensor.data;
+                    } else if (tensor.data.length === 1) {
+                        valueData = tensor.data;
+                    }
                 }
             }
             
@@ -428,7 +434,11 @@ class Game {
                 return null;
             }
             
-            const maxL = Math.max(...policyData);
+            let maxL = -Infinity;
+            for (let i = 0; i < policyData.length; i++) {
+                if (policyData[i] > maxL) maxL = policyData[i];
+            }
+            
             const exps = Array.from(policyData).map(x => Math.exp(x - maxL));
             const sumE = exps.reduce((a, b) => a + b, 0);
             const probs = exps.map(x => x / sumE);
