@@ -26,7 +26,8 @@ class Game {
     async initAI() {
         this.updateStatus("正在加載 AI 大腦...");
         try {
-            this.session = await ort.InferenceSession.create('./model.onnx');
+            // 加入時間戳記避免瀏覽器快取舊版 18通道模型，強制拉取最新 34通道模型
+            this.session = await ort.InferenceSession.create('./model.onnx?t=' + Date.now());
             this.updateStatus("AI 就緒，由你先手翻牌");
         } catch (e) {
             this.updateStatus("AI 加載失敗 (請確保已導出 model.onnx)");
@@ -490,8 +491,20 @@ class Game {
             }
         }
         if (this.playerColor) {
-            document.querySelector('.player-info.red').classList.toggle('active', this.turn === 'red');
-            document.querySelector('.player-info.black').classList.toggle('active', this.turn === 'black');
+            const redEl = document.querySelector('.player-info.red');
+            const blackEl = document.querySelector('.player-info.black');
+            
+            // 動態修正標籤文字，防止定色後 UI 顯示錯誤
+            if (this.playerColor === 'red') {
+                redEl.innerHTML = '<span class="dot"></span> 紅方 (你)';
+                blackEl.innerHTML = '黑方 (AI) <span class="dot"></span>';
+            } else {
+                redEl.innerHTML = '<span class="dot"></span> 紅方 (AI)';
+                blackEl.innerHTML = '黑方 (你) <span class="dot"></span>';
+            }
+            
+            redEl.classList.toggle('active', this.turn === 'red');
+            blackEl.classList.toggle('active', this.turn === 'black');
         }
     }
 }
