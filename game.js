@@ -323,6 +323,54 @@ class Game {
         }
     }
 
+    getHeuristicScore(move, playerColor) {
+        const opponentColor = playerColor === 'red' ? 'black' : 'red';
+        if (move.type === 'flip') {
+            return 1.5; // 💡 給予翻牌基礎加權，與移動棋步平衡
+        }
+        
+        const [sr, sc] = move.from;
+        const [tr, tc] = move.to;
+        const piece = this.board[sr][sc];
+        const target = this.board[tr][tc];
+        
+        let score = 0;
+        
+        // 1. ⚔️ 吃子收益：吃掉越高價值棋子分數越高
+        if (target && target.color === opponentColor) {
+            score += target.level * 10;
+            // 兵吃將額外大加分
+            if (piece.level === 1 && target.level === 7) {
+                score += 50;
+            }
+        }
+        
+        // 2. 🛡️ 避險判斷：模擬移動後是否會被對手反吃
+        const tempBoard = JSON.parse(JSON.stringify(this.board));
+        tempBoard[tr][tc] = tempBoard[sr][sc];
+        tempBoard[sr][sc] = null;
+        
+        let isDangerous = false;
+        for (let r = 0; r < 4; r++) {
+            for (let c = 0; c < 8; c++) {
+                const op = tempBoard[r][c];
+                if (op && op.revealed && op.color === opponentColor) {
+                    if (this.canMove(tempBoard, r, c, tr, tc)) {
+                        isDangerous = true;
+                        break;
+                    }
+                }
+            }
+        }
+        
+        if (isDangerous) {
+            // 自身越高等級，越要避免送死 (扣除 8~56 分)
+            score -= piece.level * 8;
+        }
+        
+        return score;
+    }
+
     async aiMove() {
         this.updateStatus('AI 正在思考...');
         await new Promise(r => setTimeout(r, 600));
@@ -338,11 +386,17 @@ class Game {
         let chosenMove = null;
         const probs = await this.runInference(this.board, this.aiColor, this.lastMove);
         if (probs) {
-            let bestProb = -1;
+            let bestScore = -9999;
             for (const move of moves) {
                 const aid = this.actionToId(move);
-                if (probs[aid] > bestProb) {
-                    bestProb = probs[aid];
+                const policyProb = probs[aid] || 0;
+                const heuristic = this.getHeuristicScore(move, this.aiColor);
+                
+                // 💡 綜合 Policy 直覺大腦 (加權 15.0) 與 1-Step 戰術避險吃子啟發分數
+                const totalScore = policyProb * 15.0 + heuristic;
+                
+                if (totalScore > bestScore) {
+                    bestScore = totalScore;
                     chosenMove = move;
                 }
             }
