@@ -13,7 +13,7 @@ class Game {
         this.lastMove = null;
         this.movesSinceProgress = 0;
         this.history = [];
-
+        this.historyHashes = new Map(); // 💡 追蹤盤面 Hash 歷史
         this.isGameOver = false;
         this.session = null;
         
@@ -105,10 +105,25 @@ class Game {
         }
 
         this.movesSinceProgress = 0; // 翻子視為進展
+        this.historyHashes.clear();  // 💡 不可逆動作，清空歷史
         this.history.push({ type: 'flip', pos: [r, c], player: this.turn, name: piece.name });
 
         this.render();
         this.nextTurn();
+    }
+
+    // 💡 獲取當前盤面的 Hash (加上輪次)
+    getBoardHash(board, turn) {
+        let s = "";
+        for (let r=0; r<4; r++) {
+            for (let c=0; c<8; c++) {
+                const p = board[r][c];
+                if (!p) s += "0";
+                else if (!p.revealed) s += "X";
+                else s += (p.color === 'red' ? '' : '-') + p.level;
+            }
+        }
+        return s + "|" + turn;
     }
 
     tryMove(from, to) {
@@ -121,10 +136,17 @@ class Game {
             const captured = this.board[tr][tc];
             this.board[tr][tc] = piece;
             this.board[sr][sc] = null;
-            if (captured) this.movesSinceProgress = 0; // 吃子視為進展
-            else          this.movesSinceProgress++;
+            
+            if (captured) {
+                this.movesSinceProgress = 0; // 吃子視為進展
+                this.historyHashes.clear();  // 💡 吃子不可逆，清空歷史
+            } else {
+                this.movesSinceProgress++;
+                const h = this.getBoardHash(this.board, (this.turn === 'red' ? 'black' : 'red'));
+                this.historyHashes.set(h, (this.historyHashes.get(h) || 0) + 1);
+            }
+            
             this.history.push({ type: 'move', from, to, player: this.turn, piece: piece.name, captured: captured ? captured.name : null });
-
             this.selected = null;
             this.render();
             this.nextTurn();
@@ -165,20 +187,23 @@ class Game {
     }
 
     async nextTurn() {
-        const winner = this.checkWinner();
+        const { winner, reason } = this.checkWinner();
         if (winner) {
-            this.endGame(winner);
+            this.endGame(winner, reason);
             return;
         }
 
-        // Cycle turn: first -> colorA -> colorB -> ...
         if (this.turn === 'first') {
-            // After first flip, turn goes to the OTHER color
             this.turn = this.aiColor;
         } else {
             this.turn = (this.turn === 'red') ? 'black' : 'red';
         }
         
+        // 初始狀態記錄
+        if (this.historyHashes.size === 0) {
+            this.historyHashes.set(this.getBoardHash(this.board, this.turn), 1);
+        }
+
         this.render();
 
         if (this.turn === this.aiColor && !this.isGameOver) {
@@ -191,42 +216,78 @@ class Game {
     // ==========================================
 
     boardToTensor(board, turn, lastMove) {
-        // 6 通道 x 4 x 8
-        const tensor = new Float32Array(6 * 4 * 8);
+        // 💡 升級為 34 通道 x 4 x 8，與 train_ai.py 的 get_tensor 完全對齊
+        const tensor = new Float32Array(34 * 4 * 8);
         const idx = (ch, r, c) => ch * 32 + r * 8 + c;
-
-        let totalHidden = 0;
-        for (let r = 0; r < 4; r++)
-            for (let c = 0; c < 8; c++)
-                if (board[r][c] && !board[r][c].revealed) totalHidden++;
 
         for (let r = 0; r < 4; r++) {
             for (let c = 0; c < 8; c++) {
                 const p = board[r][c];
                 if (!p) continue;
                 if (!p.revealed) {
-                    tensor[idx(2, r, c)] = 1.0; // 暗子通道
-                    tensor[idx(3, r, c)] = totalHidden / 32.0;
+                    tensor[idx(14, r, c)] = 1.0; // 通道 14: 蓋棋
                 } else {
-                    const val = p.level / 7.0;
-                    if (p.color === turn) tensor[idx(0, r, c)] = val; // 我方
-                    else                  tensor[idx(1, r, c)] = val; // 敵方
+                    const pv = 8 - p.level; // 對齊 Python: 1 (帥/將) ~ 7 (兵/卒)
+                    if (p.color === 'red') {
+                        tensor[idx(pv - 1, r, c)] = 1.0; // 通道 0-6: 紅棋 (帥仕相俥傌炮兵)
+                    } else {
+                        tensor[idx(pv + 6, r, c)] = 1.0; // 通道 7-13: 黑棋 (將士象車馬包卒)
+                    }
                 }
             }
         }
 
-        // 最後一手標記
-        if (lastMove) {
-            if (lastMove.type === 'flip') {
-                const [r, c] = lastMove.pos;
-                tensor[idx(4, r, c)] = 1.0;
-            } else {
-                const [sr, sc] = lastMove.from;
-                const [tr, tc] = lastMove.to;
-                tensor[idx(4, sr, sc)] = 1.0;
-                tensor[idx(5, tr, tc)] = 1.0;
+        // 通道 15: 輪到紅方
+        if (turn === 'red') {
+            for (let i = 0; i < 32; i++) tensor[15 * 32 + i] = 1.0;
+        }
+
+        // 通道 16-17: 舊版最後一手標記，保留為 0 (新版不使用但佔位)
+
+        // 通道 18-31: 信念池 (未翻開棋子比例)
+        const pool = { 1:0, 2:0, 3:0, 4:0, 5:0, 6:0, 7:0, [-1]:0, [-2]:0, [-3]:0, [-4]:0, [-5]:0, [-6]:0, [-7]:0 };
+        let total_h = 0;
+        for (let r = 0; r < 4; r++) {
+            for (let c = 0; c < 8; c++) {
+                const p = board[r][c];
+                if (p && !p.revealed) {
+                    const pv = p.color === 'red' ? (8 - p.level) : -(8 - p.level);
+                    pool[pv] = (pool[pv] || 0) + 1;
+                    total_h++;
+                }
             }
         }
+        if (total_h < 1) total_h = 1;
+
+        const pvs = [1, 2, 3, 4, 5, 6, 7, -1, -2, -3, -4, -5, -6, -7];
+        for (let i = 0; i < 14; i++) {
+            const ratio = (pool[pvs[i]] || 0) / total_h;
+            for (let cell = 0; cell < 32; cell++) {
+                tensor[(18 + i) * 32 + cell] = ratio;
+            }
+        }
+
+        // 通道 32-33: 合法移動目的地標記
+        for (let r = 0; r < 4; r++) {
+            for (let c = 0; c < 8; c++) {
+                const p = board[r][c];
+                if (p && p.revealed) {
+                    const i = p.color === 'red' ? 0 : 1;
+                    const dirs = [[0,1],[0,-1],[1,0],[-1,0]];
+                    for (let [dr, dc] of dirs) {
+                        let tr = r + dr, tc = c + dc;
+                        if (tr >= 0 && tr < 4 && tc >= 0 && tc < 8 && this.canMove(board, r, c, tr, tc)) {
+                            tensor[idx(32 + i, tr, tc)] = 1.0;
+                        }
+                    }
+                    if (p.level === 2) { // 炮跳子
+                        for (let tr = 0; tr < 4; tr++) if (this.canMove(board, r, c, tr, c)) tensor[idx(32 + i, tr, c)] = 1.0;
+                        for (let tc = 0; tc < 8; tc++) if (this.canMove(board, r, c, r, tc)) tensor[idx(32 + i, r, tc)] = 1.0;
+                    }
+                }
+            }
+        }
+
         return tensor;
     }
 
@@ -247,7 +308,7 @@ class Game {
         if (!this.session) return null;
         try {
             const tensorData = this.boardToTensor(board, turn, lastMove);
-            const inputTensor = new ort.Tensor('float32', tensorData, [1, 6, 4, 8]);
+            const inputTensor = new ort.Tensor('float32', tensorData, [1, 34, 4, 8]);
             const output = await this.session.run({ input: inputTensor });
             // policy 輸出為 logits，需要 softmax
             const logits = output.policy ? output.policy.data : Object.values(output)[0].data;
@@ -265,15 +326,17 @@ class Game {
         this.updateStatus('AI 正在思考...');
         await new Promise(r => setTimeout(r, 600));
 
-        const moves = this.getValidMoves(this.aiColor);
-        if (moves.length === 0) { this.endGame(this.playerColor); return; }
+        const { normal: moves, repMoves } = this.getValidMoves(this.aiColor);
+        
+        if (moves.length === 0) {
+            if (repMoves.length > 0) this.endGame('draw', '只剩禁手步');
+            else this.endGame(this.playerColor, '無棋可走');
+            return;
+        }
 
         let chosenMove = null;
-
-        // 用訓練好的模型選步
         const probs = await this.runInference(this.board, this.aiColor, this.lastMove);
         if (probs) {
-            // 找合法走步中機率最高的
             let bestProb = -1;
             for (const move of moves) {
                 const aid = this.actionToId(move);
@@ -283,7 +346,6 @@ class Game {
                 }
             }
         } else {
-            // Fallback: 模型未就緒時隨機走
             chosenMove = moves[Math.floor(Math.random() * moves.length)];
         }
 
@@ -291,16 +353,24 @@ class Game {
         if (chosenMove.type === 'flip') {
             const piece = this.board[chosenMove.pos[0]][chosenMove.pos[1]];
             piece.revealed = true;
+            this.historyHashes.clear(); // 💡 翻牌清空歷史
             this.history.push({ ...chosenMove, name: piece.name });
-            this.movesSinceProgress = 0; // 翻子視為進展
+            this.movesSinceProgress = 0;
             this.lastMove = chosenMove;
         } else {
             const piece    = this.board[chosenMove.from[0]][chosenMove.from[1]];
             const captured = this.board[chosenMove.to[0]][chosenMove.to[1]];
             this.board[chosenMove.to[0]][chosenMove.to[1]] = piece;
             this.board[chosenMove.from[0]][chosenMove.from[1]] = null;
-            if (captured) this.movesSinceProgress = 0; // 吃子視為進展
-            else          this.movesSinceProgress++;
+            
+            if (captured) {
+                this.movesSinceProgress = 0;
+                this.historyHashes.clear(); // 💡 吃子清空歷史
+            } else {
+                this.movesSinceProgress++;
+                const h = this.getBoardHash(this.board, this.playerColor);
+                this.historyHashes.set(h, (this.historyHashes.get(h) || 0) + 1);
+            }
             this.history.push({ ...chosenMove, piece: piece.name, captured: captured?.name ?? null });
             this.lastMove = chosenMove;
         }
@@ -310,47 +380,70 @@ class Game {
     }
 
     getValidMoves(player) {
-        let moves = [];
+        let normal = [], repMoves = [];
+        const nextTurn = (player === 'red' ? 'black' : 'red');
+
         for (let r = 0; r < 4; r++) {
             for (let c = 0; c < 8; c++) {
                 const p = this.board[r][c];
                 if (!p) continue;
                 if (!p.revealed) {
-                    moves.push({ type: 'flip', pos: [r, c], player });
+                    normal.push({ type: 'flip', pos: [r, c], player });
                 } else if (p.color === player) {
+                    const candidates = [];
                     const dirs = [[0,1],[0,-1],[1,0],[-1,0]];
                     for (let [dr, dc] of dirs) {
                         let tr = r + dr, tc = c + dc;
                         if (tr >= 0 && tr < 4 && tc >= 0 && tc < 8 && this.canMove(this.board, r, c, tr, tc)) {
-                            moves.push({ type: 'move', from: [r, c], to: [tr, tc], player });
+                            candidates.push({ type: 'move', from: [r, c], to: [tr, tc], player });
                         }
                     }
                     if (p.level === 2) { 
-                        for (let tr = 0; tr < 4; tr++) if (this.canMove(this.board, r, c, tr, c)) moves.push({ type: 'move', from: [r, c], to: [tr, c], player });
-                        for (let tc = 0; tc < 8; tc++) if (this.canMove(this.board, r, c, r, tc)) moves.push({ type: 'move', from: [r, c], to: [r, tc], player });
+                        for (let tr = 0; tr < 4; tr++) if (this.canMove(this.board, r, c, tr, c)) candidates.push({ type: 'move', from: [r, c], to: [tr, c], player });
+                        for (let tc = 0; tc < 8; tc++) if (this.canMove(this.board, r, c, r, tc)) candidates.push({ type: 'move', from: [r, c], to: [r, tc], player });
+                    }
+
+                    // 💡 檢查禁手規則
+                    for (let m of candidates) {
+                        const tempB = JSON.parse(JSON.stringify(this.board));
+                        const [sr, sc] = m.from; const [tr, tc] = m.to;
+                        tempB[tr][tc] = tempB[sr][sc]; tempB[sr][sc] = null;
+                        const h = this.getBoardHash(tempB, nextTurn);
+                        if (this.historyHashes.get(h) >= 2) repMoves.push(m);
+                        else normal.push(m);
                     }
                 }
             }
         }
-        return moves;
+        return { normal, repMoves };
     }
 
     checkWinner() {
         const redPieces   = this.board.flat().filter(p => p && p.color === 'red').length;
         const blackPieces = this.board.flat().filter(p => p && p.color === 'black').length;
-        if (redPieces === 0)   return 'black';
-        if (blackPieces === 0) return 'red';
-        // 和局條件：連續 50 手無進展（沒吃子且沒翻子）
-        if (this.movesSinceProgress >= 50) return 'draw';
-        return null;
+        if (redPieces === 0)   return { winner: 'black', reason: '吃光所有紅棋' };
+        if (blackPieces === 0) return { winner: 'red', reason: '吃光所有黑棋' };
+
+        // 💡 檢查當前玩家是否無棋可走或只剩禁手
+        const { normal, repMoves } = this.getValidMoves(this.turn);
+        if (normal.length === 0) {
+            if (repMoves.length > 0) return { winner: 'draw', reason: '三重複禁手強制和局' };
+            return { winner: (this.turn === 'red' ? 'black' : 'red'), reason: '困斃（無合法棋步）' };
+        }
+
+        if (this.movesSinceProgress >= 30) return { winner: 'draw', reason: '30步無進展' };
+        return { winner: null };
     }
 
 
-    async endGame(winner) {
+    async endGame(winner, reason) {
         this.isGameOver = true;
-        const winnerName = winner === 'red' ? '紅方' : '黑方';
-        this.updateStatus(`遊戲結束！${winnerName} 獲勝`);
-        alert(`遊戲結束！${winnerName} 獲勝`);
+        let msg = "";
+        if (winner === 'draw') msg = `平手！(${reason})`;
+        else msg = `遊戲結束！${winner === 'red' ? '紅方' : '黑方'} 獲勝 (${reason})`;
+        
+        this.updateStatus(msg);
+        alert(msg);
         await this.uploadData(winner);
     }
 
