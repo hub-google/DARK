@@ -648,7 +648,7 @@ class Game {
         // 💡 執行強大的蒙地卡羅樹搜尋 (MCTS)，對齊 Python 世界冠軍級算力，並附加頂級異常隔離
         let chosenMove = null;
         try {
-            chosenMove = await this.runMCTS(60);
+            chosenMove = await this.runMCTS(300);
         } catch(mctsError) {
             console.error("MCTS execution crashed! Falling back safely...", mctsError);
         }
