@@ -110,8 +110,8 @@ main {
 /* Board Grid */
 #board {
     display: grid;
-    grid-template-columns: repeat(8, 1fr);
-    grid-template-rows: repeat(4, 1fr);
+    grid-template-columns: repeat(8, 12.5%);
+    grid-template-rows: repeat(4, 25%);
     gap: 10px;
     aspect-ratio: 2 / 1;
     padding: 20px;
@@ -126,6 +126,7 @@ main {
     cursor: pointer;
     transition: background 0.2s;
     position: relative;
+    overflow: hidden;
 }
 
 .cell:hover {
@@ -272,5 +273,28 @@ footer {
 @media (max-width: 900px) {
     main {
         grid-template-columns: 1fr;
+    }
+    header h1 {
+        font-size: 2.5rem;
+    }
+}
+
+@media (max-width: 600px) {
+    header h1 {
+        font-size: 1.8rem;
+    }
+    #app {
+        padding: 1rem;
+    }
+    .piece {
+        font-size: 1.1rem;
+        border-width: 2px;
+    }
+    #board {
+        gap: 6px;
+        padding: 10px;
+    }
+    .glass-panel {
+        padding: 1rem;
     }
 }
