@@ -514,7 +514,7 @@ class Game {
             {name: '兵', level: 1, color: 'red', count: 5},
             {name: '將', level: 7, color: 'black', count: 1}, {name: '士', level: 6, color: 'black', count: 2},
             {name: '象', level: 5, color: 'black', count: 2}, {name: '車', level: 4, color: 'black', count: 2},
-            {name: '馬', level: 3, color: 'black', count: 2}, {name: '炮', level: 2, color: 'black', count: 2},
+            {name: '馬', level: 3, color: 'black', count: 2}, {name: '包', level: 2, color: 'black', count: 2},
             {name: '卒', level: 1, color: 'black', count: 5}
         ];
         
