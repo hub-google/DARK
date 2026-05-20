@@ -58,6 +58,9 @@
             <p>Powered by AlphaZero & ONNX Runtime Web</p>
         </footer>
     </div>
-    <script src="game.js?v=2.0.0"></script>
+    <script>
+        // 💡 動態載入 game.js 並附加時間戳記，徹底解決瀏覽器快取舊代碼與舊模型的問題，確保打開即是最新版
+        document.write('<script src="game.js?t=' + Date.now() + '"><\/script>');
+    </script>
 </body>
 </html>
