@@ -448,10 +448,30 @@ class Game {
         for (let r = 0; r < 4; r++) {
             for (let c = 0; c < 8; c++) {
                 const p = board[r][c];
-                if (p) {
-                    if (p.revealed) {
-                        const pv = p.color === 'red' ? (8 - p.level) : -(8 - p.level);
-                        score += vals[pv] || 0;
+                if (p && p.revealed) {
+                    const pv = p.color === 'red' ? (8 - p.level) : -(8 - p.level);
+                    const val = vals[pv] || 0;
+                    
+                    // 💡 檢查相鄰格子是否有敵方活子可以直接吃掉我們
+                    let inDanger = false;
+                    const dirs = [[0,1],[0,-1],[1,0],[-1,0]];
+                    for (let [dr, dc] of dirs) {
+                        const tr = r + dr, tc = c + dc;
+                        if (tr >= 0 && tr < 4 && tc >= 0 && tc < 8) {
+                            const enemy = board[tr][tc];
+                            if (enemy && enemy.revealed && enemy.color !== p.color) {
+                                if (this.canMove(board, tr, tc, r, c)) {
+                                    inDanger = true;
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                    
+                    if (inDanger) {
+                         score += val * 0.3; // 💡 處於相鄰敵方威脅下，價值折扣 70% (避免智障送子)
+                    } else {
+                         score += val;
                     }
                 }
             }
@@ -575,7 +595,9 @@ class Game {
         for (let i = 0; i < moves.length; i++) {
             const m = moves[i];
             const aid = this.actionToId(m);
-            const prior = sumP > 0 ? validProbs[i] / sumP : 1.0 / moves.length;
+            // 💡 MCTS 先驗機率平滑 (Prior Smoothing)：給予合法移動 10% 基礎均勻機率，防範炮打被餓死
+            const rawPrior = sumP > 0 ? validProbs[i] / sumP : 1.0 / moves.length;
+            const prior = 0.9 * rawPrior + 0.1 / moves.length;
             root.children.set(aid, new MCTSNode(prior, root, m));
         }
         
@@ -619,6 +641,8 @@ class Game {
                         } else {
                             sb[r][c] = { name: '兵', level: 1, color: 'red', revealed: true }; // 🛡️ 剩餘暗子空時的防崩潰回退
                         }
+                        // 💡 修正隨機節點 MCTS 穿透 Bug：隨機翻牌後盤面變更，必須立即 break 作為葉子評估，防止隨機樹不匹配
+                        break;
                     } else {
                         const [sr, sc] = m.from;
                         const [tr, tc] = m.to;
@@ -661,7 +685,9 @@ class Game {
                         for (let i = 0; i < leafMoves.length; i++) {
                             const m = leafMoves[i];
                             const aid = this.actionToId(m);
-                            const prior = sumLeafP > 0 ? leafProbs[i] / sumLeafP : 1.0 / leafMoves.length;
+                            // 💡 葉子擴充先驗機率平滑 (Prior Smoothing)：給予合法移動 10% 基礎均勻機率
+                            const rawPrior = sumLeafP > 0 ? leafProbs[i] / sumLeafP : 1.0 / leafMoves.length;
+                            const prior = 0.9 * rawPrior + 0.1 / leafMoves.length;
                             curr.children.set(aid, new MCTSNode(prior, curr, m));
                         }
                     }
