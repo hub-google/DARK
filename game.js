@@ -574,7 +574,7 @@ class Game {
         return pool;
     }
 
-    async runMCTS(simulations = 60) {
+    async runMCTS(simulations = 800) {
         if (!this.session) return null;
         
         const { normal: moves } = this.getValidMoves(this.aiColor);
