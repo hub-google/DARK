@@ -36,12 +36,14 @@ class Game {
         this.aiColor = null;
         this.selected = null;
         this.lastMove = null;
+        this.lastBoard = null;          // 💡 追蹤上一手真實歷史盤面，用於 68通道特徵拼接
         this.movesSinceProgress = 0;
         this.history = [];
-        this.historyHashes = new Map(); // 💡 追蹤盤面 Hash 歷史
+        this.historyHashes = new Map();
         this.isGameOver = false;
         this.session = null;
-        
+        this.isLocked = false;
+
         this.initBoard();
         this.render();
         this.initAI();
@@ -63,17 +65,17 @@ class Game {
     initBoard() {
         let pool = [];
         const piecesInfo = [
-            {name: '帥', level: 7, color: 'red', count: 1}, {name: '仕', level: 6, color: 'red', count: 2},
-            {name: '相', level: 5, color: 'red', count: 2}, {name: '俥', level: 4, color: 'red', count: 2},
-            {name: '傌', level: 3, color: 'red', count: 2}, {name: '炮', level: 2, color: 'red', count: 2},
-            {name: '兵', level: 1, color: 'red', count: 5},
-            {name: '將', level: 7, color: 'black', count: 1}, {name: '士', level: 6, color: 'black', count: 2},
-            {name: '象', level: 5, color: 'black', count: 2}, {name: '車', level: 4, color: 'black', count: 2},
-            {name: '馬', level: 3, color: 'black', count: 2}, {name: '包', level: 2, color: 'black', count: 2},
-            {name: '卒', level: 1, color: 'black', count: 5}
+            { name: '帥', level: 7, color: 'red', count: 1 }, { name: '仕', level: 6, color: 'red', count: 2 },
+            { name: '相', level: 5, color: 'red', count: 2 }, { name: '俥', level: 4, color: 'red', count: 2 },
+            { name: '傌', level: 3, color: 'red', count: 2 }, { name: '炮', level: 2, color: 'red', count: 2 },
+            { name: '兵', level: 1, color: 'red', count: 5 },
+            { name: '將', level: 7, color: 'black', count: 1 }, { name: '士', level: 6, color: 'black', count: 2 },
+            { name: '象', level: 5, color: 'black', count: 2 }, { name: '車', level: 4, color: 'black', count: 2 },
+            { name: '馬', level: 3, color: 'black', count: 2 }, { name: '包', level: 2, color: 'black', count: 2 },
+            { name: '卒', level: 1, color: 'black', count: 5 }
         ];
         for (let p of piecesInfo) {
-            for (let i = 0; i < p.count; i++) pool.push({...p, revealed: false});
+            for (let i = 0; i < p.count; i++) pool.push({ ...p, revealed: false });
         }
         pool.sort(() => Math.random() - 0.5);
         let idx = 0;
@@ -88,8 +90,11 @@ class Game {
     }
 
     handleBoardClick(e) {
-        if (this.isGameOver) return;
-        
+        if (this.isGameOver || this.isLocked) {
+            if (this.isLocked) console.warn("系統鎖定中，請等待 AI 或動畫完成！");
+            return;
+        }
+
         // 嚴格限制：只有輪到玩家時才能操作
         if (this.turn === 'first' || this.turn === this.playerColor) {
             const cell = e.target.closest('.cell');
@@ -106,7 +111,7 @@ class Game {
             }
 
             // 2. 選取與移動邏輯
-            if (this.turn === 'first') return; 
+            if (this.turn === 'first') return;
 
             // 修正：選取時必須確認是自己的顏色
             if (piece && piece.revealed && piece.color === this.playerColor) {
@@ -122,7 +127,7 @@ class Game {
     flipPiece(r, c) {
         const piece = this.board[r][c];
         piece.revealed = true;
-        
+
         // 首翻定色
         if (this.turn === 'first') {
             this.playerColor = piece.color;
@@ -130,8 +135,8 @@ class Game {
             this.updateStatus(`首翻定色：你是 ${piece.color === 'red' ? '紅方' : '黑方'}`);
         }
 
-        this.movesSinceProgress = 0; // 翻子視為進展
-        this.historyHashes.clear();  // 💡 不可逆動作，清空歷史
+        this.movesSinceProgress = 0;
+        this.historyHashes.clear();
         const m = { type: 'flip', pos: [r, c], player: this.turn, name: piece.name };
         this.history.push(m);
         this.logMove(m);
@@ -143,8 +148,8 @@ class Game {
     // 💡 獲取當前盤面的 Hash (加上輪次)
     getBoardHash(board, turn) {
         let s = "";
-        for (let r=0; r<4; r++) {
-            for (let c=0; c<8; c++) {
+        for (let r = 0; r < 4; r++) {
+            for (let c = 0; c < 8; c++) {
                 const p = board[r][c];
                 if (!p) s += "0";
                 else if (!p.revealed) s += "X";
@@ -159,12 +164,11 @@ class Game {
         const [tr, tc] = to;
         const piece = this.board[sr][sc];
 
-        // 二次檢查：確保移動的是自己的棋子，且目前是自己的回合
         if (piece && piece.color === this.turn && this.canMove(this.board, sr, sc, tr, tc)) {
             const captured = this.board[tr][tc];
             this.board[tr][tc] = piece;
             this.board[sr][sc] = null;
-            
+
             if (captured) {
                 this.movesSinceProgress = 0; // 吃子視為進展
                 this.historyHashes.clear();  // 💡 吃子不可逆，清空歷史
@@ -173,7 +177,7 @@ class Game {
                 const h = this.getBoardHash(this.board, (this.turn === 'red' ? 'black' : 'red'));
                 this.historyHashes.set(h, (this.historyHashes.get(h) || 0) + 1);
             }
-            
+
             const m = { type: 'move', from, to, player: this.turn, piece: piece.name, captured: captured ? captured.name : null };
             this.history.push(m);
             this.logMove(m);
@@ -209,8 +213,8 @@ class Game {
         if (dist !== 1) return false;
         if (!t) return true;
         if (t.revealed && t.color !== a.color) {
-            if (a.level === 7 && t.level === 1) return false; 
-            if (a.level === 1 && t.level === 7) return true; 
+            if (a.level === 7 && t.level === 1) return false;
+            if (a.level === 1 && t.level === 7) return true;
             return a.level >= t.level;
         }
         return false;
@@ -228,7 +232,7 @@ class Game {
         } else {
             this.turn = (this.turn === 'red') ? 'black' : 'red';
         }
-        
+
         // 初始狀態記錄
         if (this.historyHashes.size === 0) {
             this.historyHashes.set(this.getBoardHash(this.board, this.turn), 1);
@@ -244,16 +248,14 @@ class Game {
         this.render();
 
         if (this.turn === this.aiColor && !this.isGameOver) {
+            this.isLocked = true; // 💡 鎖定 UI，防止玩家亂點
             await this.aiMove();
+            this.isLocked = false; // 💡 解鎖 UI
         }
     }
 
-    // ==========================================
-    // AI 推理引擎 (對齊 train_ai.py 的 board_to_tensor)
-    // ==========================================
-
-    boardToTensor(board, turn, lastMove) {
-        // 💡 升級為 34 通道 x 4 x 8，與 train_ai.py 的 get_tensor 完全對齊
+    boardToTensorSingle(board, turn) {
+        // 💡 單一盤面 34通道特徵工程，與 train_ai.py 完全對齊
         const tensor = new Float32Array(34 * 4 * 8);
         const idx = (ch, r, c) => ch * 32 + r * 8 + c;
 
@@ -299,7 +301,7 @@ class Game {
         }
 
         // 通道 18-31: 信念池 (未翻開棋子比例)
-        const pool = { 1:0, 2:0, 3:0, 4:0, 5:0, 6:0, 7:0, [-1]:0, [-2]:0, [-3]:0, [-4]:0, [-5]:0, [-6]:0, [-7]:0 };
+        const pool = { 1: 0, 2: 0, 3: 0, 4: 0, 5: 0, 6: 0, 7: 0, [-1]: 0, [-2]: 0, [-3]: 0, [-4]: 0, [-5]: 0, [-6]: 0, [-7]: 0 };
         let total_h = 0;
         for (let r = 0; r < 4; r++) {
             for (let c = 0; c < 8; c++) {
@@ -327,7 +329,7 @@ class Game {
                 const p = board[r][c];
                 if (p && p.revealed) {
                     const i = p.color === 'red' ? 0 : 1;
-                    const dirs = [[0,1],[0,-1],[1,0],[-1,0]];
+                    const dirs = [[0, 1], [0, -1], [1, 0], [-1, 0]];
                     for (let [dr, dc] of dirs) {
                         let tr = r + dr, tc = c + dc;
                         if (tr >= 0 && tr < 4 && tc >= 0 && tc < 8 && this.canMove(board, r, c, tr, tc)) {
@@ -345,6 +347,11 @@ class Game {
         return tensor;
     }
 
+    boardToTensor(board, turn) {
+        // 34 通道特徵，與 train_ai.py 完全對齊
+        return this.boardToTensorSingle(board, turn);
+    }
+
     actionToId(move) {
         if (move.type === 'flip') {
             const [r, c] = move.pos;
@@ -353,18 +360,18 @@ class Game {
             const [sr, sc] = move.from;
             const [tr, tc] = move.to;
             const fromIdx = sr * 8 + sc;
-            const toIdx   = tr * 8 + tc;
+            const toIdx = tr * 8 + tc;
             return 32 + fromIdx * 32 + toIdx; // 32~1055
         }
     }
 
-    async runInference(board, turn, lastMove) {
+    async runInference(board, turn) {
         if (!this.session) return null;
         try {
-            const tensorData = this.boardToTensor(board, turn, lastMove);
+            const tensorData = this.boardToTensor(board, turn);
             const inputTensor = new ort.Tensor('float32', tensorData, [1, 34, 4, 8]);
             const output = await this.session.run({ input: inputTensor });
-            
+
             // 🔍 動態尋找長度為 1056 的 policy 輸出 (防止 ONNX 輸出鍵名變更或順序顛倒)
             let policyData = null;
             for (const tensor of Object.values(output)) {
@@ -373,21 +380,21 @@ class Game {
                     break;
                 }
             }
-            
+
             if (!policyData) {
                 console.error("ONNX inference: Could not find policy output with length 1056");
                 return null;
             }
-            
+
             let maxL = -Infinity;
             for (let i = 0; i < policyData.length; i++) {
                 if (policyData[i] > maxL) maxL = policyData[i];
             }
-            
+
             const exps = Array.from(policyData).map(x => Math.exp(x - maxL));
             const sumE = exps.reduce((a, b) => a + b, 0);
             return exps.map(x => x / sumE);
-        } catch(e) {
+        } catch (e) {
             console.error('ONNX inference error:', e);
             return null;
         }
@@ -398,25 +405,25 @@ class Game {
         if (move.type === 'flip') {
             return 1.5;
         }
-        
+
         const [sr, sc] = move.from;
         const [tr, tc] = move.to;
         const piece = this.board[sr][sc];
         const target = this.board[tr][tc];
-        
+
         let score = 0;
-        
+
         if (target && target.color === opponentColor) {
             score += target.level * 10;
             if (piece.level === 1 && target.level === 7) {
                 score += 50;
             }
         }
-        
+
         const tempBoard = JSON.parse(JSON.stringify(this.board));
         tempBoard[tr][tc] = tempBoard[sr][sc];
         tempBoard[sr][sc] = null;
-        
+
         let isDangerous = false;
         for (let r = 0; r < 4; r++) {
             for (let c = 0; c < 8; c++) {
@@ -429,21 +436,21 @@ class Game {
                 }
             }
         }
-        
+
         if (isDangerous) {
             score -= piece.level * 8;
         }
-        
+
         return score;
     }
 
     getHeuristicValue(board, turn) {
         const pieceVals = {
-            1:1000, 2:850, 3:650, 4:450, 5:250, 6:550, 7:150,
-            [-1]:-1000, [-2]:-850, [-3]:-650, [-4]:-450, [-5]:-250, [-6]:-550, [-7]:-150,
-            0:0, 10:0
+            1: 1000, 2: 850, 3: 650, 4: 450, 5: 250, 6: 550, 7: 150,
+            [-1]: -1000, [-2]: -850, [-3]: -650, [-4]: -450, [-5]: -250, [-6]: -550, [-7]: -150,
+            0: 0, 10: 0
         };
-        
+
         let redPawnCount = 0;
         let blackPawnCount = 0;
         for (let r = 0; r < 4; r++) {
@@ -456,11 +463,11 @@ class Game {
                 }
             }
         }
-        
+
         const vals = { ...pieceVals };
         if (blackPawnCount === 0) vals[1] += 500;
         if (redPawnCount === 0) vals[-1] -= 500;
-        
+
         let score = 0;
         for (let r = 0; r < 4; r++) {
             for (let c = 0; c < 8; c++) {
@@ -468,8 +475,7 @@ class Game {
                 if (p && p.revealed) {
                     const pv = p.color === 'red' ? (8 - p.level) : -(8 - p.level);
                     const val = vals[pv] || 0;
-                    
-                    // 💡 檢查是否有任何敵方活子可以直接吃掉我們 (含遠程炮的跳吃威脅)
+
                     let inDanger = false;
                     for (let er = 0; er < 4; er++) {
                         for (let ec = 0; ec < 8; ec++) {
@@ -483,27 +489,33 @@ class Game {
                         }
                         if (inDanger) break;
                     }
-                    
-                    if (inDanger) {
-                         score += val * 0.3; // 💡 處於相鄰敵方威脅下，價值折扣 70% (避免智障送子)
-                    } else {
-                         score += val;
+
+                    score += inDanger ? val * 0.3 : val;
+
+                    // 💡 【炮跳吃獎勵】炮（level 2）有合法跳吃機會時，額外加分
+                    if (p.level === 2) {
+                        let hasAttack = false;
+                        for (let tr = 0; tr < 4 && !hasAttack; tr++)
+                            if (this.canMove(board, r, c, tr, c) && board[tr][c] && board[tr][c].revealed) hasAttack = true;
+                        for (let tc = 0; tc < 8 && !hasAttack; tc++)
+                            if (this.canMove(board, r, c, r, tc) && board[r][tc] && board[r][tc].revealed) hasAttack = true;
+                        if (hasAttack) score += p.color === 'red' ? 280 : -280;
                     }
                 }
             }
         }
-        
+
         let h = Math.max(Math.min(score / 5000.0, 1.0), -1.0);
         return turn === 'red' ? h : -h;
     }
 
-    async runInferenceWithCustomBoard(board, turn, lastMove) {
+    async runInferenceWithCustomBoard(board, turn) {
         if (!this.session) return null;
         try {
-            const tensorData = this.boardToTensor(board, turn, lastMove);
+            const tensorData = this.boardToTensor(board, turn);
             const inputTensor = new ort.Tensor('float32', tensorData, [1, 34, 4, 8]);
             const output = await this.session.run({ input: inputTensor });
-            
+
             // 🔍 獲取正確對應長度的 policy (1056) 與 value (1) 輸出，完全免疫 key 順序反轉
             let policyData = null;
             let valueData = null;
@@ -516,24 +528,24 @@ class Game {
                     }
                 }
             }
-            
+
             if (!policyData || !valueData) {
                 console.error("ONNX custom inference: Shape mismatch!");
                 return null;
             }
-            
+
             let maxL = -Infinity;
             for (let i = 0; i < policyData.length; i++) {
                 if (policyData[i] > maxL) maxL = policyData[i];
             }
-            
+
             const exps = Array.from(policyData).map(x => Math.exp(x - maxL));
             const sumE = exps.reduce((a, b) => a + b, 0);
             const probs = exps.map(x => x / sumE);
-            
+
             const value = valueData[0];
             return { probs, value };
-        } catch(e) {
+        } catch (e) {
             console.error('ONNX custom board inference error:', e);
             return null;
         }
@@ -542,22 +554,22 @@ class Game {
     getRemainingHiddenPool() {
         const pool = [];
         const counts = {};
-        
+
         const piecesInfo = [
-            {name: '帥', level: 7, color: 'red', count: 1}, {name: '仕', level: 6, color: 'red', count: 2},
-            {name: '相', level: 5, color: 'red', count: 2}, {name: '俥', level: 4, color: 'red', count: 2},
-            {name: '傌', level: 3, color: 'red', count: 2}, {name: '炮', level: 2, color: 'red', count: 2},
-            {name: '兵', level: 1, color: 'red', count: 5},
-            {name: '將', level: 7, color: 'black', count: 1}, {name: '士', level: 6, color: 'black', count: 2},
-            {name: '象', level: 5, color: 'black', count: 2}, {name: '車', level: 4, color: 'black', count: 2},
-            {name: '馬', level: 3, color: 'black', count: 2}, {name: '包', level: 2, color: 'black', count: 2},
-            {name: '卒', level: 1, color: 'black', count: 5}
+            { name: '帥', level: 7, color: 'red', count: 1 }, { name: '仕', level: 6, color: 'red', count: 2 },
+            { name: '相', level: 5, color: 'red', count: 2 }, { name: '俥', level: 4, color: 'red', count: 2 },
+            { name: '傌', level: 3, color: 'red', count: 2 }, { name: '炮', level: 2, color: 'red', count: 2 },
+            { name: '兵', level: 1, color: 'red', count: 5 },
+            { name: '將', level: 7, color: 'black', count: 1 }, { name: '士', level: 6, color: 'black', count: 2 },
+            { name: '象', level: 5, color: 'black', count: 2 }, { name: '車', level: 4, color: 'black', count: 2 },
+            { name: '馬', level: 3, color: 'black', count: 2 }, { name: '包', level: 2, color: 'black', count: 2 },
+            { name: '卒', level: 1, color: 'black', count: 5 }
         ];
-        
+
         for (const info of piecesInfo) {
             counts[`${info.color}_${info.name}`] = info.count;
         }
-        
+
         for (let r = 0; r < 4; r++) {
             for (let c = 0; c < 8; c++) {
                 const p = this.board[r][c];
@@ -566,7 +578,7 @@ class Game {
                 }
             }
         }
-        
+
         for (const record of this.history) {
             if (record.captured) {
                 const capturerColor = record.player;
@@ -574,32 +586,32 @@ class Game {
                 counts[`${capturedColor}_${record.captured}`]--;
             }
         }
-        
+
         for (const key in counts) {
             const parts = key.split('_');
             const color = parts[0];
             const name = parts[1];
             const info = piecesInfo.find(i => i.color === color && i.name === name);
             const level = info.level;
-            
+
             for (let i = 0; i < Math.max(0, counts[key]); i++) {
                 pool.push({ name, level, color, revealed: false });
             }
         }
-        
+
         return pool;
     }
 
     async runMCTS(simulations = 800) {
         if (!this.session) return null;
-        
+
         const { normal: moves } = this.getValidMoves(this.aiColor);
         if (moves.length === 0) return null;
-        
+
         const root = new MCTSNode(1.0);
-        const rawProbs = await this.runInference(this.board, this.aiColor, this.lastMove);
+        const rawProbs = await this.runInference(this.board, this.aiColor);
         if (!rawProbs) return null;
-        
+
         let sumP = 0;
         const validProbs = moves.map(m => {
             const aid = this.actionToId(m);
@@ -607,7 +619,7 @@ class Game {
             sumP += p;
             return p;
         });
-        
+
         for (let i = 0; i < moves.length; i++) {
             const m = moves[i];
             const aid = this.actionToId(m);
@@ -616,21 +628,27 @@ class Game {
             const prior = 0.9 * rawPrior + 0.1 / moves.length;
             root.children.set(aid, new MCTSNode(prior, root, m));
         }
-        
+
         for (let sim = 0; sim < simulations; sim++) {
+            // 💡 【世界級修復 2】異步讓渡 (Async Yielding)：每 20 次運算強制讓出主執行緒
+            // 這能保證你的網頁能流暢播放動畫、UI 狀態隨時更新，絕對不卡死！
+            if (sim > 0 && sim % 20 === 0) {
+                await new Promise(r => setTimeout(r, 0));
+            }
+
             try {
                 let sb = JSON.parse(JSON.stringify(this.board));
                 let ct = this.aiColor;
                 let sd = [];
-                
+
                 let path = [root];
                 let curr = root;
                 let pool = this.getRemainingHiddenPool();
-                
+
                 while (!curr.isLeaf()) {
                     let bestAid = null;
                     let bestUcb = -Infinity;
-                    
+
                     for (const [aid, child] of curr.children) {
                         const u = child.ucb(root.v);
                         if (u > bestUcb) {
@@ -638,26 +656,26 @@ class Game {
                             bestAid = aid;
                         }
                     }
-                    
+
                     if (bestAid === null) break;
                     curr = curr.children.get(bestAid);
                     path.push(curr);
-                    
+
                     const m = curr.move;
+
+                    // 💡 複製上一手模擬盤面（在虛擬落子/翻牌生效前！）
+                    slastBoard = JSON.parse(JSON.stringify(sb));
+
                     if (m.type === 'flip') {
                         const [r, c] = m.pos;
                         if (pool && pool.length > 0) {
                             const idx = Math.floor(Math.random() * pool.length);
                             const p = pool.splice(idx, 1)[0];
-                            if (p) {
-                                sb[r][c] = { ...p, revealed: true };
-                            } else {
-                                sb[r][c] = { name: '兵', level: 1, color: 'red', revealed: true };
-                            }
+                            sb[r][c] = p ? { ...p, revealed: true } : { name: '兵', level: 1, color: 'red', revealed: true };
                         } else {
-                            sb[r][c] = { name: '兵', level: 1, color: 'red', revealed: true }; // 🛡️ 剩餘暗子空時的防崩潰回退
+                            sb[r][c] = { name: '兵', level: 1, color: 'red', revealed: true };
                         }
-                        // 💡 修正隨機節點 MCTS 穿透 Bug：隨機翻牌後盤面變更，必須立即 break 作為葉子評估，防止隨機樹不匹配
+                        ct = ct === 'red' ? 'black' : 'red';
                         break;
                     } else {
                         const [sr, sc] = m.from;
@@ -667,17 +685,22 @@ class Game {
                         sb[tr][tc] = sb[sr][sc];
                         sb[sr][sc] = null;
                     }
-                    
+
                     ct = ct === 'red' ? 'black' : 'red';
                 }
-                
+
                 let val = 0.0;
-                const { normal: leafMoves } = this.getValidMoves(ct, sb);
-                
+                const { normal: leafMoves, repMoves: leafRepMoves } = this.getValidMoves(ct, sb);
+
                 if (leafMoves.length === 0) {
-                    val = -1.0; 
+                    // 💡 【世界級修復 4】和局懲罰動態修正：避免為了躲避 -0.25 而做出自殺行為
+                    if (leafRepMoves && leafRepMoves.length > 0) {
+                        val = 0.0; // 如果只剩下禁手步，這就是強制和局，不扣分以免 AI 送死
+                    } else {
+                        val = -1.0; // 真的無步可走被困斃
+                    }
                 } else {
-                    const output = await this.runInferenceWithCustomBoard(sb, ct, curr.move);
+                    const output = await this.runInferenceWithCustomBoard(sb, ct);
                     if (output) {
                         const { probs: p_c, value: nv } = output;
                         let hiddenCount = 0;
@@ -689,7 +712,7 @@ class Game {
                         }
                         const bf = 0.2 + 0.5 * (1.0 - (hiddenCount / 32.0));
                         val = (1.0 - bf) * nv + bf * this.getHeuristicValue(sb, ct);
-                        
+
                         let sumLeafP = 0;
                         const leafProbs = leafMoves.map(m => {
                             const aid = this.actionToId(m);
@@ -697,7 +720,7 @@ class Game {
                             sumLeafP += p;
                             return p;
                         });
-                        
+
                         for (let i = 0; i < leafMoves.length; i++) {
                             const m = leafMoves[i];
                             const aid = this.actionToId(m);
@@ -708,7 +731,7 @@ class Game {
                         }
                     }
                 }
-                
+
                 let cv = -val;
                 for (let i = path.length - 1; i >= 1; i--) {
                     const node = path[i];
@@ -717,21 +740,29 @@ class Game {
                     cv = -cv;
                 }
                 root.v += 1;
-            } catch(simError) {
+            } catch (simError) {
                 console.error("MCTS single simulation error (safely caught):", simError);
                 break; // 🛡️ 安全中斷此輪模擬，防止整盤遊戲卡死
             }
         }
-        
+
+        // 💡 【長捉懲罰】選出訪問最多的子節點，但折扣會造成盤面重複的走步
         let bestAid = null;
         let maxV = -1;
         for (const [aid, child] of root.children) {
-            if (child.v > maxV) {
-                maxV = child.v;
-                bestAid = aid;
+            let visits = child.v;
+            // 若此步會造成盤面重複，大幅折扣其訪問次數
+            if (child.move && child.move.type === 'move') {
+                const tempB = this.board.map(row => row.map(cell => cell ? { ...cell } : null));
+                const [fr, fc] = child.move.from, [tr, tc] = child.move.to;
+                tempB[tr][tc] = tempB[fr][fc]; tempB[fr][fc] = null;
+                const h = this.getBoardHash(tempB, this.playerColor);
+                const repCount = this.historyHashes.get(h) || 0;
+                if (repCount >= 1) visits *= Math.pow(0.25, repCount); // 重複1次→25%，重複2次→6%
             }
+            if (visits > maxV) { maxV = visits; bestAid = aid; }
         }
-        
+
         return bestAid !== null ? root.children.get(bestAid).move : null;
     }
 
@@ -740,7 +771,7 @@ class Game {
         await new Promise(r => setTimeout(r, 600));
 
         const { normal: moves, repMoves } = this.getValidMoves(this.aiColor);
-        
+
         if (moves.length === 0) {
             if (repMoves.length > 0) this.endGame('draw', '只剩禁手步');
             else this.endGame(this.playerColor, '無棋可走');
@@ -751,14 +782,13 @@ class Game {
         let chosenMove = null;
         try {
             chosenMove = await this.runMCTS(800);
-        } catch(mctsError) {
+        } catch (mctsError) {
             console.error("MCTS execution crashed! Falling back safely...", mctsError);
         }
-        
-        // 🛡️ 雙重保險降級機制：若 MCTS 未能回傳 (例如 ONNX 異常)，降級使用直覺+戰術避險引擎
+
         if (!chosenMove) {
             console.log("MCTS Fallback to Heuristic engine");
-            const probs = await this.runInference(this.board, this.aiColor, this.lastMove);
+            const probs = await this.runInference(this.board, this.aiColor);
             if (probs) {
                 let bestScore = -9999;
                 for (const move of moves) {
@@ -786,12 +816,16 @@ class Game {
             this.logMove(m);
             this.movesSinceProgress = 0;
             this.lastMove = chosenMove;
+            this.lastBoard = null;      // 💡 翻子清空歷史
         } else {
-            const piece    = this.board[chosenMove.from[0]][chosenMove.from[1]];
+            const piece = this.board[chosenMove.from[0]][chosenMove.from[1]];
             const captured = this.board[chosenMove.to[0]][chosenMove.to[1]];
+
+            this.lastBoard = JSON.parse(JSON.stringify(this.board));
+
             this.board[chosenMove.to[0]][chosenMove.to[1]] = piece;
             this.board[chosenMove.from[0]][chosenMove.from[1]] = null;
-            
+
             if (captured) {
                 this.movesSinceProgress = 0;
                 this.historyHashes.clear(); // 💡 吃子清空歷史
@@ -822,14 +856,14 @@ class Game {
                     normal.push({ type: 'flip', pos: [r, c], player });
                 } else if (p.color === player) {
                     const candidates = [];
-                    const dirs = [[0,1],[0,-1],[1,0],[-1,0]];
+                    const dirs = [[0, 1], [0, -1], [1, 0], [-1, 0]];
                     for (let [dr, dc] of dirs) {
                         let tr = r + dr, tc = c + dc;
                         if (tr >= 0 && tr < 4 && tc >= 0 && tc < 8 && this.canMove(board, r, c, tr, tc)) {
                             candidates.push({ type: 'move', from: [r, c], to: [tr, tc], player });
                         }
                     }
-                    if (p.level === 2) { 
+                    if (p.level === 2) {
                         for (let tr = 0; tr < 4; tr++) if (this.canMove(board, r, c, tr, c)) candidates.push({ type: 'move', from: [r, c], to: [tr, c], player });
                         for (let tc = 0; tc < 8; tc++) if (this.canMove(board, r, c, r, tc)) candidates.push({ type: 'move', from: [r, c], to: [r, tc], player });
                     }
@@ -850,9 +884,9 @@ class Game {
     }
 
     checkWinner() {
-        const redPieces   = this.board.flat().filter(p => p && p.color === 'red').length;
+        const redPieces = this.board.flat().filter(p => p && p.color === 'red').length;
         const blackPieces = this.board.flat().filter(p => p && p.color === 'black').length;
-        if (redPieces === 0)   return { winner: 'black', reason: '吃光所有紅棋' };
+        if (redPieces === 0) return { winner: 'black', reason: '吃光所有紅棋' };
         if (blackPieces === 0) return { winner: 'red', reason: '吃光所有黑棋' };
 
         // 💡 檢查當前玩家是否無棋可走或只剩禁手
@@ -872,7 +906,7 @@ class Game {
         let msg = "";
         if (winner === 'draw') msg = `平手！(${reason})`;
         else msg = `遊戲結束！${winner === 'red' ? '紅方' : '黑方'} 獲勝 (${reason})`;
-        
+
         this.updateStatus(msg);
         alert(msg);
         await this.uploadData(winner);
@@ -880,7 +914,7 @@ class Game {
 
     async uploadData(winner) {
         const url = "__GOOGLE_SCRIPT_URL__";
-        if (!url || url.startsWith("__")) return; 
+        if (!url || url.startsWith("__")) return;
         const payload = { winner, steps: this.history.length, history: this.history };
         try {
             await fetch(url, { method: 'POST', mode: 'no-cors', body: JSON.stringify(payload) });
@@ -938,7 +972,7 @@ class Game {
         if (this.playerColor) {
             const redEl = document.querySelector('.player-info.red');
             const blackEl = document.querySelector('.player-info.black');
-            
+
             // 動態修正標籤文字，防止定色後 UI 顯示錯誤
             if (this.playerColor === 'red') {
                 redEl.innerHTML = '<span class="dot"></span> 紅方 (你)';
@@ -947,7 +981,7 @@ class Game {
                 redEl.innerHTML = '<span class="dot"></span> 紅方 (AI)';
                 blackEl.innerHTML = '黑方 (你) <span class="dot"></span>';
             }
-            
+
             redEl.classList.toggle('active', this.turn === 'red');
             blackEl.classList.toggle('active', this.turn === 'black');
         }
