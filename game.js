@@ -279,7 +279,29 @@ class Game {
             for (let i = 0; i < 32; i++) tensor[15 * 32 + i] = 1.0;
         }
 
-        // 通道 16-17: 舊版最後一手標記，保留為 0 (新版不使用但佔位)
+        // 通道 16-17: 填入我方/敵方炮的跳吃威脅
+        const activeOpp = (turn === 'red') ? 'black' : 'red';
+        const teams = [turn, activeOpp];
+        for (let i = 0; i < 2; i++) {
+            const team = teams[i];
+            for (let pr = 0; pr < 4; pr++) {
+                for (let pc = 0; pc < 8; pc++) {
+                    const p = board[pr][pc];
+                    if (p && p.revealed && p.color === team && p.level === 2) { // 炮
+                        for (let tr = 0; tr < 4; tr++) {
+                            if (this.canMove(board, pr, pc, tr, pc) && board[tr][pc]) {
+                                tensor[idx(16 + i, tr, pc)] = 1.0;
+                            }
+                        }
+                        for (let tc = 0; tc < 8; tc++) {
+                            if (this.canMove(board, pr, pc, pr, tc) && board[pr][tc]) {
+                                tensor[idx(16 + i, pr, tc)] = 1.0;
+                            }
+                        }
+                    }
+                }
+            }
+        }
 
         // 通道 18-31: 信念池 (未翻開棋子比例)
         const pool = { 1:0, 2:0, 3:0, 4:0, 5:0, 6:0, 7:0, [-1]:0, [-2]:0, [-3]:0, [-4]:0, [-5]:0, [-6]:0, [-7]:0 };
@@ -452,20 +474,19 @@ class Game {
                     const pv = p.color === 'red' ? (8 - p.level) : -(8 - p.level);
                     const val = vals[pv] || 0;
                     
-                    // 💡 檢查相鄰格子是否有敵方活子可以直接吃掉我們
+                    // 💡 檢查是否有任何敵方活子可以直接吃掉我們 (含遠程炮的跳吃威脅)
                     let inDanger = false;
-                    const dirs = [[0,1],[0,-1],[1,0],[-1,0]];
-                    for (let [dr, dc] of dirs) {
-                        const tr = r + dr, tc = c + dc;
-                        if (tr >= 0 && tr < 4 && tc >= 0 && tc < 8) {
-                            const enemy = board[tr][tc];
+                    for (let er = 0; er < 4; er++) {
+                        for (let ec = 0; ec < 8; ec++) {
+                            const enemy = board[er][ec];
                             if (enemy && enemy.revealed && enemy.color !== p.color) {
-                                if (this.canMove(board, tr, tc, r, c)) {
+                                if (this.canMove(board, er, ec, r, c)) {
                                     inDanger = true;
                                     break;
                                 }
                             }
                         }
+                        if (inDanger) break;
                     }
                     
                     if (inDanger) {
