@@ -284,20 +284,15 @@ class Game {
         const teams = [turn, activeOpp];
         for (let i = 0; i < 2; i++) {
             const team = teams[i];
-            for (let pr = 0; pr < 4; pr++) {
-                for (let pc = 0; pc < 8; pc++) {
-                    const p = board[pr][pc];
-                    if (p && p.revealed && p.color === team && p.level === 2) { // 炮
-                        for (let tr = 0; tr < 4; tr++) {
-                            if (this.canMove(board, pr, pc, tr, pc) && board[tr][pc]) {
-                                tensor[idx(16 + i, tr, pc)] = 1.0;
-                            }
-                        }
-                        for (let tc = 0; tc < 8; tc++) {
-                            if (this.canMove(board, pr, pc, pr, tc) && board[pr][tc]) {
-                                tensor[idx(16 + i, pr, tc)] = 1.0;
-                            }
-                        }
+            const { normal: moves } = this.getValidMoves(team, board);
+            for (let m of moves) {
+                if (m.type === 'move') {
+                    const [sr, sc] = m.from;
+                    const [tr, tc] = m.to;
+                    const p = board[sr][sc];
+                    const target = board[tr][tc];
+                    if (p && p.revealed && p.level === 2 && target) { // 炮且目標格有子 (即跳吃威脅)
+                        tensor[idx(16 + i, tr, tc)] = 1.0;
                     }
                 }
             }
